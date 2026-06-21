@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Movie, ActiveTab } from './types';
-import { MOVIES, PROFILE_AVATAR } from './data';
+import { PROFILE_AVATAR } from './data';
 import ShaderBackground from './components/ShaderBackground';
 import MainBrowse from './components/MainBrowse';
 import DetailModal from './components/DetailModal';
@@ -9,6 +9,8 @@ import SearchPanel from './components/SearchPanel';
 import DownloadsPanel from './components/DownloadsPanel';
 import ServerMonitor from './components/ServerMonitor';
 import ProfilePanel from './components/ProfilePanel';
+import Login from './components/Login';
+import { getItems } from './services/jellyfin';
 import { 
   Tv, Film, Search, Download, Server, User, List, Menu, X, ArrowLeft, Heart, Layers
 } from 'lucide-react';
@@ -19,9 +21,41 @@ export default function App() {
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [activePlayingMovie, setActivePlayingMovie] = useState<Movie | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!localStorage.getItem('jellyfin_token'));
+  const [movies, setMovies] = useState<Movie[]>([]);
+  const [isLoadingMovies, setIsLoadingMovies] = useState(false);
 
   // User details
   const cleanUserName = 'Nihal Farhan';
+
+  const loadMovies = async () => {
+    const userId = localStorage.getItem('jellyfin_user_id');
+    if (userId) {
+      setIsLoadingMovies(true);
+      try {
+        const items = await getItems(userId);
+        setMovies(items);
+      } catch (err) {
+        console.error('Failed to fetch items from Jellyfin', err);
+      } finally {
+        setIsLoadingMovies(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadMovies();
+    }
+  }, [isAuthenticated]);
+
+  const handleLogout = () => {
+    localStorage.removeItem('jellyfin_token');
+    localStorage.removeItem('jellyfin_user_id');
+    setIsAuthenticated(false);
+    setMovies([]);
+    setActiveTab('home');
+  };
 
   // Persistence States synced with localStorage
   const [favorites, setFavorites] = useState<string[]>(() => {
@@ -116,20 +150,22 @@ export default function App() {
       });
     });
 
-    MOVIES.forEach((m) => {
-      if (m.id === activePlayingMovie.id) {
-        m.progress = progress;
-      }
-    });
+    setMovies((prev) => 
+      prev.map(m => m.id === activePlayingMovie.id ? { ...m, progress } : m)
+    );
   };
 
   // Switch navigation tabs helper
   const renderTabContent = () => {
+    if (isLoadingMovies) {
+      return <div className="flex-1 flex items-center justify-center text-primary font-bold animate-pulse">Loading Library...</div>;
+    }
+    
     switch (activeTab) {
       case 'home':
         return (
           <MainBrowse 
-            movies={MOVIES}
+            movies={movies}
             favorites={favorites}
             onToggleMyList={toggleMyList}
             onSelectMovie={setSelectedMovie}
@@ -139,7 +175,7 @@ export default function App() {
       case 'movies':
         return (
           <MainBrowse 
-            movies={MOVIES.filter((m) => m.type === 'movie')}
+            movies={movies.filter((m) => m.type === 'movie')}
             favorites={favorites}
             onToggleMyList={toggleMyList}
             onSelectMovie={setSelectedMovie}
@@ -149,7 +185,7 @@ export default function App() {
       case 'tv-shows':
         return (
           <MainBrowse 
-            movies={MOVIES.filter((m) => m.type === 'tv')}
+            movies={movies.filter((m) => m.type === 'tv')}
             favorites={favorites}
             onToggleMyList={toggleMyList}
             onSelectMovie={setSelectedMovie}
@@ -159,14 +195,14 @@ export default function App() {
       case 'search':
         return (
           <SearchPanel 
-            movies={MOVIES}
+            movies={movies}
             onSelectMovie={setSelectedMovie}
           />
         );
       case 'downloads':
         return (
           <DownloadsPanel 
-            movies={MOVIES}
+            movies={movies}
             downloads={downloads}
             onPlay={playMovie}
             onRemoveDownload={removeDownload}
@@ -177,12 +213,13 @@ export default function App() {
       case 'profile':
         return (
           <ProfilePanel 
-            movies={MOVIES}
+            movies={movies}
             favorites={favorites}
             watchHistory={watchHistory}
             userName={cleanUserName}
             onSelectMovie={setSelectedMovie}
             onClearHistory={() => setWatchHistory([])}
+            onLogout={handleLogout}
           />
         );
       default:
@@ -200,6 +237,10 @@ export default function App() {
     { id: 'server', label: 'Server Dev', icon: <Server className="w-5 h-5" /> },
     { id: 'profile', label: 'Profile', icon: <User className="w-5 h-5" /> },
   ];
+
+  if (!isAuthenticated) {
+    return <Login onLoginSuccess={() => setIsAuthenticated(true)} />;
+  }
 
   return (
     <div className="min-h-screen text-on-background bg-[#0c0a10] flex flex-col pb-20 md:pb-6 relative leading-relaxed overflow-x-hidden select-none">

@@ -10,6 +10,7 @@ interface ProfilePanelProps {
   userName: string;
   onSelectMovie: (movie: Movie) => void;
   onClearHistory: () => void;
+  onLogout: () => void;
 }
 
 export default function ProfilePanel({
@@ -18,7 +19,8 @@ export default function ProfilePanel({
   watchHistory,
   userName,
   onSelectMovie,
-  onClearHistory
+  onClearHistory,
+  onLogout
 }: ProfilePanelProps) {
   const [subTier, setSubTier] = useState<'ultra' | 'standard'>('ultra');
   const favoriteMovies = movies.filter((m) => favorites.includes(m.id));
@@ -78,6 +80,14 @@ export default function ProfilePanel({
             }`}
           >
             Standard Plan (HD Stereo)
+          </button>
+          
+          <button 
+            onClick={onLogout}
+            className="w-full px-4 py-2 mt-2 border rounded-xl text-xs font-bold transition-all cursor-pointer bg-red-500/10 border-red-500/20 text-red-400 hover:bg-red-500/20 flex items-center justify-center gap-2"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Sign Out
           </button>
         </div>
       </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Movie } from '../types';
 import { Play, Pause, Volume2, VolumeX, X, RotateCcw, Settings, SkipForward, Maximize, Subtitles, Activity } from 'lucide-react';
+import { getPlaybackInfo, buildDirectStreamUrl } from '../services/jellyfin';
 
 interface VideoPlayerProps {
   movie: Movie;
@@ -8,201 +9,145 @@ interface VideoPlayerProps {
   onUpdateProgress?: (progress: number) => void;
 }
 
-// Synced subtitles for each movie key
-const SUBTITLES: { [movieId: string]: { time: number; text: string }[] } = {
-  'dune-2': [
-    { time: 2, text: "Narrator: 'Power over spice is power over all...'" },
-    { time: 6, text: "Paul Atreides: 'The desert winds are speaking. They tell of a path.'" },
-    { time: 11, text: "Chani: 'If you want to lead my people, you must first survive them.'" },
-    { time: 17, text: "Paul: 'We will fight alongside the Fremen. Long live the fighters!'" },
-    { time: 23, text: "[Deep cinematic syntesizer chords crescendo]" },
-    { time: 28, text: "Fremen Elder: 'A storm is coming. One that will sweep across the universe.'" },
-  ],
-  'foundation': [
-    { time: 2, text: "Gaal Dornick: 'When I was young, I believed math was the simple truth.'" },
-    { time: 7, text: "Hari Seldon: 'The math tells us a single narrative: the empire falls.'" },
-    { time: 13, text: "Brother Day: 'Do you dare to predict the end of our dynasty?'" },
-    { time: 18, text: "Seldon: 'I predict the duration of the darkness. Only a Foundation can shorten it.'" },
-    { time: 24, text: "[Hyperdrive hums as stars blur into tunnels of light]" },
-  ],
-  'arcane': [
-    { time: 2, text: "Vi: 'Are you ready, Powder?'" },
-    { time: 6, text: "Powder: 'I made these bombs. They're going to work this time. I know it.'" },
-    { time: 11, text: "Silco: 'There is a monster inside of everyone. You just have to let it out.'" },
-    { time: 17, text: "Vi: 'We had a deal! We protect each other!'" },
-    { time: 22, text: "[Electric action music kicks in with visual distortion]" },
-  ],
-  'interstellar': [
-    { time: 2, text: "Cooper: 'We used to look up at the sky and wonder at our place in the stars.'" },
-    { time: 8, text: "Brand: 'Now we just look down and worry about our place in the dirt.'" },
-    { time: 13, text: "Cooper: 'This world is a treasure, Donald. But she\'s been telling us to leave for a while.'" },
-    { time: 19, text: "TARS: 'Initiating wormhole entry. Hold on to your seats.'" },
-    { time: 25, text: "[Orchestral pipe organ chords intensifies]" },
-  ],
-  'neo-tokyo': [
-    { time: 2, text: "[SYS]: 'Connecting to Neo Tokyo Sub-mesh... OK.'" },
-    { time: 6, text: "Sterling: 'The neon never sleeps. Neither do the viruses in the main core.'" },
-    { time: 11, text: "Synthetic: 'I remember the rain, Jack. But I was never programmed to cry.'" },
-    { time: 17, text: "Sterling: 'A soul isn\'t code. It\'s what remains when the system crashes.'" },
-  ],
-};
-
 export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(true);
-  const [currentTime, setCurrentTime] = useState(movie.progress ? Math.floor((movie.progress / 100) * 120) : 0);
-  const duration = 120; // 2 minutes representation
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(1); // avoid divide by zero
   const [volume, setVolume] = useState(0.85);
   const [isMuted, setIsMuted] = useState(false);
-  const [captionEnabled, setCaptionEnabled] = useState(true);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   
-  // Ref for local interval & particle canvas
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Auto update simulation loop
   useEffect(() => {
-    if (isPlaying) {
-      intervalRef.current = setInterval(() => {
-        setCurrentTime((prev) => {
-          if (prev >= duration) {
-            setIsPlaying(false);
-            return duration;
-          }
-          const next = prev + 1;
-          // Callback to parent to update watch progress
-          if (onUpdateProgress) {
-            onUpdateProgress(Math.floor((next / duration) * 100));
-          }
-          return next;
-        });
-      }, 1000 / playbackSpeed);
-    } else if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-    }
+    let isMounted = true;
+    const initPlayer = async () => {
+      try {
+        setLoading(true);
+        const userId = localStorage.getItem('jellyfin_user_id');
+        if (!userId) throw new Error('Not authenticated');
 
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [isPlaying, playbackSpeed]);
+        const playbackInfo = await getPlaybackInfo(movie.id, userId);
+        if (!playbackInfo.MediaSources || playbackInfo.MediaSources.length === 0) {
+          throw new Error('No media sources available');
+        }
 
-  // Particle simulation for video screen fallback
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+        const mediaSourceId = playbackInfo.MediaSources[0].Id;
+        const directUrl = buildDirectStreamUrl(movie.id, mediaSourceId);
 
-    let animId: number;
-    let particles: { x: number; y: number; vx: number; vy: number; radius: number; color: string }[] = [];
+        const video = videoRef.current;
+        if (!video || !isMounted) return;
 
-    const resizeCanvas = () => {
-      canvas.width = canvas.parentElement?.clientWidth || 800;
-      canvas.height = canvas.parentElement?.clientHeight || 450;
-    };
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
-
-    // Seed colors based on movie genres or theme
-    const themeColors = movie.id === 'dune-2' 
-      ? ['#ffbe53', '#ff8400', '#631d04', '#475371'] 
-      : movie.id === 'arcane'
-      ? ['#14d1ff', '#cdbdff', '#7c4dff', '#003543']
-      : ['#a6e6ff', '#7c4dff', '#cdbdff', '#131313'];
-
-    for (let i = 0; i < 45; i++) {
-      particles.push({
-        x: Math.random() * canvas.width,
-        y: Math.random() * canvas.height,
-        vx: (Math.random() - 0.5) * 1.5,
-        vy: (Math.random() - 0.5) * 1.5,
-        radius: Math.random() * 3 + 1,
-        color: themeColors[Math.floor(Math.random() * themeColors.length)],
-      });
-    }
-
-    const draw = () => {
-      if (!ctx || !canvas) return;
-      
-      // Clear with dark ambient fade
-      ctx.fillStyle = 'rgba(10, 10, 14, 0.12)';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // Render nebulous glowing gas clouds in mock player
-      const timeFactor = Date.now() * 0.001;
-      const gradient = ctx.createRadialGradient(
-        canvas.width / 2 + Math.cos(timeFactor * 0.5) * (canvas.width * 0.25),
-        canvas.height / 2 + Math.sin(timeFactor * 0.7) * (canvas.height * 0.25),
-        10,
-        canvas.width / 2,
-        canvas.height / 2,
-        canvas.width * 0.6
-      );
-      
-      gradient.addColorStop(0, movie.id === 'dune-2' ? 'rgba(215, 100, 10, 0.15)' : 'rgba(124, 77, 255, 0.12)');
-      gradient.addColorStop(0.5, 'rgba(20, 14, 30, 0.05)');
-      gradient.addColorStop(1, 'rgba(0,0,0,0)');
-      
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      if (isPlaying) {
-        // Draw orbital particle points representing streaming pixels
-        particles.forEach((p) => {
-          p.x += p.vx * playbackSpeed;
-          p.y += p.vy * playbackSpeed;
-
-          // Constraints
-          if (p.x < 0 || p.x > canvas.width) p.vx *= -1;
-          if (p.y < 0 || p.y > canvas.height) p.vy *= -1;
-
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-          ctx.fillStyle = p.color;
-          ctx.shadowBlur = 10;
-          ctx.shadowColor = p.color;
-          ctx.fill();
-        });
-        ctx.shadowBlur = 0; // reset
-      } else {
-        // Draw static warning
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-        ctx.font = '14px Inter';
-        ctx.textAlign = 'center';
-        ctx.fillText('PAUSED', canvas.width / 2, canvas.height / 2);
+        video.src = directUrl;
+        
+        video.onloadedmetadata = () => {
+          if (!isMounted) return;
+          setLoading(false);
+          video.play().catch(e => {
+            if (e.name !== 'AbortError') {
+              console.error("Auto-play prevented", e);
+            }
+          });
+        };
+        
+        video.onerror = (e) => {
+          if (!isMounted) return;
+          setError('Video playback failed. The browser might not support the format.');
+          setLoading(false);
+        };
+        
+      } catch (err: any) {
+        if (!isMounted) return;
+        console.error(err);
+        setError(err.message || 'Failed to load video stream');
+        setLoading(false);
       }
-
-      animId = requestAnimationFrame(draw);
     };
 
-    draw();
+    initPlayer();
 
     return () => {
-      window.removeEventListener('resize', resizeCanvas);
-      cancelAnimationFrame(animId);
+      isMounted = false;
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      }
     };
-  }, [isPlaying, movie, playbackSpeed]);
+  }, [movie.id]);
 
-  // Subtitle selection
-  const getActiveSubtitle = () => {
-    const movieSubs = SUBTITLES[movie.id] || SUBTITLES['dune-2']; // fallback to dune
-    const match = [...movieSubs].reverse().find((sub) => currentTime >= sub.time);
-    return match ? match.text : '';
+  useEffect(() => {
+    if (videoRef.current) {
+      if (isPlaying) {
+        videoRef.current.play().catch(e => console.error("Auto-play prevented", e));
+      } else {
+        videoRef.current.pause();
+      }
+    }
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.volume = isMuted ? 0 : volume;
+    }
+  }, [volume, isMuted]);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.playbackRate = playbackSpeed;
+    }
+  }, [playbackSpeed]);
+
+  const handleTimeUpdate = () => {
+    if (videoRef.current) {
+      setCurrentTime(videoRef.current.currentTime);
+      
+      // Update progress
+      if (onUpdateProgress && videoRef.current.duration > 0) {
+        const pct = (videoRef.current.currentTime / videoRef.current.duration) * 100;
+        // Only update occasionally to avoid thrashing state
+        if (Math.floor(pct) % 5 === 0) {
+            onUpdateProgress(Math.floor(pct));
+        }
+      }
+    }
   };
 
-  const formatTime = (seconds: number) => {
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  const handleDurationChange = () => {
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration);
+      // If we had a saved progress, seek to it
+      if (movie.progress && movie.progress > 0 && movie.progress < 95) {
+          const seekTime = (movie.progress / 100) * videoRef.current.duration;
+          videoRef.current.currentTime = seekTime;
+      }
+    }
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setCurrentTime(Number(e.target.value));
+    const newTime = Number(e.target.value);
+    setCurrentTime(newTime);
+    if (videoRef.current) {
+      videoRef.current.currentTime = newTime;
+    }
+  };
+
+  const formatTime = (seconds: number) => {
+    if (isNaN(seconds)) return "0:00";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) {
+      return `${h}:${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
+    }
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
   return (
-    <div id="video-theater-overlay" className="fixed inset-0 bg-[#07070a]/98 z-[999] flex flex-col justify-between p-4 md:p-8 animate-entrance-hero text-white">
+    <div id="video-theater-overlay" className="fixed inset-0 bg-[#07070a] z-[999] flex flex-col justify-between p-4 md:p-8 animate-entrance-hero text-white">
       {/* Top Header Controls */}
       <div className="flex justify-between items-center z-10">
         <div>
@@ -221,16 +166,6 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
           >
             <Activity className="w-5 h-5" />
           </button>
-          
-          <button 
-            onClick={() => setCaptionEnabled(!captionEnabled)}
-            className={`p-2 rounded-lg border transition-all ${
-              captionEnabled ? 'bg-secondary-container/20 border-secondary-container text-[#4cd6ff]' : 'bg-white/5 border-white/10 hover:bg-white/10'
-            }`}
-            title="Toggle Subtitles"
-          >
-            <Subtitles className="w-5 h-5" />
-          </button>
 
           <button 
             onClick={onClose}
@@ -243,37 +178,50 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
       </div>
 
       {/* Main Screen Projection Center */}
-      <div className="relative flex-1 flex items-center justify-center my-4 overflow-hidden rounded-xl border border-white/10 bg-black/50 shadow-[0_0_50px_rgba(124,77,255,0.15)]">
-        <canvas ref={canvasRef} className="absolute inset-0 w-full h-full object-cover" />
+      <div className="relative flex-1 flex items-center justify-center my-4 overflow-hidden rounded-xl border border-white/10 bg-black shadow-[0_0_50px_rgba(124,77,255,0.15)] group">
+        
+        {loading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
+                <span className="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+            </div>
+        )}
 
-        {/* Sync Text Display overlay */}
-        {captionEnabled && getActiveSubtitle() && (
-          <div className="absolute bottom-8 px-6 py-2 bg-black/80 backdrop-blur-md rounded-xl border border-white/10 text-center font-medium max-w-xl text-sm md:text-body-md text-primary-fixed shadow-xl transform transition-all animate-pulse">
-            {getActiveSubtitle()}
+        {error && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20 text-red-400">
+                {error}
+            </div>
+        )}
+
+        <video 
+          ref={videoRef}
+          className="w-full h-full object-contain"
+          onTimeUpdate={handleTimeUpdate}
+          onDurationChange={handleDurationChange}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          onClick={() => setIsPlaying(!isPlaying)}
+        />
+
+        {/* Floating Play/Pause State indicator overlay if clicked inside */}
+        {!loading && !error && (
+          <div 
+            onClick={() => setIsPlaying(!isPlaying)}
+            className="absolute inset-0 cursor-pointer flex items-center justify-center bg-transparent"
+          >
+            <div className={`transition-opacity duration-300 p-4 rounded-full bg-black/60 border border-white/20 transform scale-100 ${isPlaying ? 'opacity-0 group-hover:opacity-100 scale-90' : 'opacity-100'}`}>
+              {isPlaying ? <Pause className="w-12 h-12 text-primary" /> : <Play className="w-12 h-12 text-primary pl-1" />}
+            </div>
           </div>
         )}
 
-        {/* Floating Play/Pause State indicator overlay if clicked inside */}
-        <div 
-          onClick={() => setIsPlaying(!isPlaying)}
-          className="absolute inset-0 cursor-pointer flex items-center justify-center bg-transparent group"
-        >
-          <div className="opacity-0 group-hover:opacity-100 transition-opacity p-4 rounded-full bg-black/60 border border-white/20 transform scale-90 group-hover:scale-100 duration-300">
-            {isPlaying ? <Pause className="w-8 h-8 text-primary" /> : <Play className="w-8 h-8 text-primary" />}
-          </div>
-        </div>
-
         {/* Technical Diagnostics Overlay */}
         {showDiagnostics && (
-          <div className="absolute top-4 left-4 bg-black/90 p-4 rounded-xl border border-white/10 font-mono text-[10px] md:text-xs text-green-400 space-y-1.5 shadow-2xl backdrop-blur-md pointer-events-none">
+          <div className="absolute top-4 left-4 bg-black/90 p-4 rounded-xl border border-white/10 font-mono text-[10px] md:text-xs text-green-400 space-y-1.5 shadow-2xl backdrop-blur-md pointer-events-none z-30">
             <p className="text-white font-bold border-b border-white/10 pb-1 mb-1">STREAM DIAGNOSTICS</p>
-            <p>Codec: AV1 Main profile (10-bit)</p>
-            <p>Source resolution: 3840x2160 (4K UHD)</p>
-            <p>Bitrate: {(18.4 + Math.sin(currentTime) * 1.5).toFixed(2)} Mbps</p>
-            <p>Framerate: {isPlaying ? '23.976 FPS (Stable)' : '0 FPS (Idle)'}</p>
-            <p>Audio channel: Dolby Atmos TrueHD 7.1</p>
-            <p>Buffer Ahead: 24.3 seconds</p>
-            <p>Vite Context: Live WebSocket Proxy</p>
+            <p>Source: JellyFin Direct Stream</p>
+            <p>Player: Native HTML5</p>
+            <p>Duration: {formatTime(duration)}</p>
+            <p>Current Time: {formatTime(currentTime)}</p>
           </div>
         )}
       </div>
@@ -282,19 +230,19 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
       <div className="glass-card p-4 md:p-6 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md z-10">
         {/* Progress Timeline seek bar */}
         <div className="flex items-center gap-3 mb-4">
-          <span className="font-mono text-xs text-on-surface-variant">{formatTime(currentTime)}</span>
+          <span className="font-mono text-xs text-on-surface-variant w-12 text-center">{formatTime(currentTime)}</span>
           <input
             type="range"
             min={0}
-            max={duration}
+            max={duration || 100}
             value={currentTime}
             onChange={handleSeek}
             className="flex-1 accent-primary h-1.5 bg-white/15 rounded-lg cursor-pointer hover:h-2 transition-all"
             style={{
-              background: `linear-gradient(to right, #cdbdff ${(currentTime / duration) * 100}%, rgba(255,255,255,0.1) ${(currentTime / duration) * 100}%)`,
+              background: `linear-gradient(to right, #cdbdff ${(currentTime / (duration || 1)) * 100}%, rgba(255,255,255,0.1) ${(currentTime / (duration || 1)) * 100}%)`,
             }}
           />
-          <span className="font-mono text-xs text-on-surface-variant">{formatTime(duration)}</span>
+          <span className="font-mono text-xs text-on-surface-variant w-12 text-center">{formatTime(duration)}</span>
         </div>
 
         {/* Media Buttons Row */}
@@ -309,7 +257,11 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
             </button>
 
             <button 
-              onClick={() => setCurrentTime(Math.max(0, currentTime - 10))}
+              onClick={() => {
+                const newTime = Math.max(0, currentTime - 10);
+                setCurrentTime(newTime);
+                if (videoRef.current) videoRef.current.currentTime = newTime;
+              }}
               className="p-2 border border-white/10 hover:bg-white/10 rounded-lg text-on-surface transition-all"
               title="-10 Seconds"
             >
@@ -317,7 +269,11 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
             </button>
 
             <button 
-              onClick={() => setCurrentTime(Math.min(duration, currentTime + 10))}
+              onClick={() => {
+                const newTime = Math.min(duration, currentTime + 10);
+                setCurrentTime(newTime);
+                if (videoRef.current) videoRef.current.currentTime = newTime;
+              }}
               className="p-2 border border-white/10 hover:bg-white/10 rounded-lg text-on-surface transition-all"
               title="+10 Seconds"
             >
@@ -351,7 +307,7 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
           <div className="flex items-center gap-3">
             {/* Speed selection */}
             <div className="flex items-center bg-white/5 border border-white/10 rounded-lg p-1 text-xs font-mono">
-              <span className="text-on-surface-variant px-1.5">Speed</span>
+              <span className="text-on-surface-variant px-1.5 hidden md:inline">Speed</span>
               {[1, 1.5, 2].map((speed) => (
                 <button
                   key={speed}
@@ -367,7 +323,7 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
 
             <button 
               className="p-2 border border-white/10 hover:bg-white/10 rounded-lg transition-all text-on-surface"
-              title="Full Screen Simulator"
+              title="Full Screen"
               onClick={() => {
                 if (document.fullscreenElement) {
                   document.exitFullscreen();

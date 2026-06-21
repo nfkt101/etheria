@@ -36,6 +36,16 @@ export default function MainBrowse({
 
   const isFav = (id: string) => favorites.includes(id);
 
+  if (!movies || movies.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[50vh] text-on-surface-variant text-center space-y-4 animate-entrance-hero">
+        <Tv className="w-16 h-16 opacity-50" />
+        <h2 className="text-xl md:text-2xl font-bold text-white tracking-tight">Library Empty</h2>
+        <p className="max-w-md">No media items were found. Please ensure you have added movies or TV shows to your JellyFin server and that your user account has access to them.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-12 pb-12">
       {/* Massive Hero Section */}
