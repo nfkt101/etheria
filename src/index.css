@@ -1,0 +1,142 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-surface: #131313;
+  --color-surface-dim: #131313;
+  --color-surface-bright: #3a3939;
+  --color-surface-container-lowest: #0e0e0e;
+  --color-surface-container-low: #1c1b1b;
+  --color-surface-container: #201f1f;
+  --color-surface-container-high: #2a2a2a;
+  --color-surface-container-highest: #353534;
+  --color-on-surface: #e5e2e1;
+  --color-on-surface-variant: #cac3d8;
+  --color-inverse-surface: #e5e2e1;
+  --color-inverse-on-surface: #313030;
+  --color-outline: #948ea1;
+  --color-outline-variant: #494455;
+  --color-surface-tint: #cdbdff;
+  --color-primary: #cdbdff;
+  --color-on-primary: #370096;
+  --color-primary-container: #7c4dff;
+  --color-on-primary-container: #fcf6ff;
+  --color-inverse-primary: #6833ea;
+  --color-secondary: #a6e6ff;
+  --color-on-secondary: #003543;
+  --color-secondary-container: #14d1ff;
+  --color-on-secondary-container: #00566b;
+  --color-tertiary: #ffb688;
+  --color-on-tertiary: #512400;
+  --color-tertiary-container: #b55800;
+  --color-on-tertiary-container: #fff7f4;
+  --color-error: #ffb4ab;
+  --color-on-error: #690005;
+  --color-error-container: #93000a;
+  --color-on-error-container: #ffdad6;
+  --color-primary-fixed: #e8deff;
+  --color-primary-fixed-dim: #cdbdff;
+  --color-on-primary-fixed: #20005f;
+  --color-on-primary-fixed-variant: #4f00d0;
+  --color-secondary-fixed: #b7eaff;
+  --color-secondary-fixed-dim: #4cd6ff;
+  --color-on-secondary-fixed: #001f28;
+  --color-on-secondary-fixed-variant: #004e60;
+  --color-tertiary-fixed: #ffdbc7;
+  --color-tertiary-fixed-dim: #ffb688;
+  --color-on-tertiary-fixed: #311300;
+  --color-on-tertiary-fixed-variant: #733600;
+  --color-background: #131313;
+  --color-on-background: #e5e2e1;
+  --color-surface-variant: #353534;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #0c0a10;
+  color: #e5e2e1;
+  overflow-x: hidden;
+}
+
+/* Glassmorphism custom styling utilities */
+.glass-card {
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 0 25px rgba(205, 189, 255, 0.15);
+}
+
+/* Hide scrollbar utility class */
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.hide-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+
+/* Pulse animation for playing features */
+@keyframes gentle-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 15px rgba(205, 189, 255, 0.25);
+  }
+  50% {
+    transform: scale(1.02);
+    box-shadow: 0 0 25px rgba(205, 189, 255, 0.45);
+  }
+}
+.pulse-btn {
+  animation: gentle-pulse 3s infinite ease-in-out;
+}
+
+/* Shimmer sweeepr */
+@keyframes shimmer {
+  0% { transform: translateX(-150%) skewX(-20deg); }
+  50%, 100% { transform: translateX(150%) skewX(-20deg); }
+}
+
+.shimmer-sweep::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(to right, transparent, rgba(255,255,255,0.05), transparent);
+  animation: shimmer 8s infinite linear;
+  pointer-events: none;
+}
+
+/* Entrance Animations */
+@keyframes entrance-scale-down {
+  from { opacity: 0; transform: scale(1.03); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes slide-up-fade {
+  from { opacity: 0; transform: translateY(30px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-entrance-hero {
+  animation: entrance-scale-down 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.animate-entrance-row-1 {
+  opacity: 0;
+  animation: slide-up-fade 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.15s forwards;
+}
+.animate-entrance-row-2 {
+  opacity: 0;
+  animation: slide-up-fade 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.25s forwards;
+}
+.animate-entrance-row-3 {
+  opacity: 0;
+  animation: slide-up-fade 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.35s forwards;
+}
+

@@ -1,0 +1,6 @@
+{
+  "name": "Etheria",
+  "description": "A high-fidelity theatrical streaming application providing both gorgeous Desktop and Mobile Simulator viewports with fluid scroll reactions, a real interactive WebGL glow-field background, bento-grid components, search, item detail expansion, simulated server metrics, and fully-interactive media playback.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
