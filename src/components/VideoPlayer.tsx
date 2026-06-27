@@ -1,8 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Movie } from '../types';
 import { Play, Pause, Volume2, VolumeX, X, RotateCcw, Settings, SkipForward, Maximize, Subtitles, Activity } from 'lucide-react';
-import { getPlaybackInfo, buildDirectStreamUrl } from '../services/jellyfin';
+import { getPlaybackInfo, buildDirectStreamUrl, getServerUrl } from '../services/jellyfin';
 import Hls from 'hls.js';
+
+interface SubtitleTrack {
+  Index: number;
+  Language: string;
+  Title: string;
+  IsDefault: boolean;
+}
 
 interface VideoPlayerProps {
   movie: Movie;
@@ -21,6 +28,12 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   
+  // Subtitle States
+  const [subtitles, setSubtitles] = useState<SubtitleTrack[]>([]);
+  const [activeSubtitleIndex, setActiveSubtitleIndex] = useState<number | null>(null);
+  const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+  const [mediaSourceId, setMediaSourceId] = useState<string>('');
+  
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -37,8 +50,28 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
           throw new Error('No media sources available');
         }
 
-        const mediaSourceId = playbackInfo.MediaSources[0].Id;
-        const directUrl = buildDirectStreamUrl(movie.id, mediaSourceId);
+        const mSourceId = playbackInfo.MediaSources[0].Id;
+        setMediaSourceId(mSourceId);
+        
+        // Extract subtitle streams
+        const streams = playbackInfo.MediaSources[0].MediaStreams || [];
+        const subStreams = streams.filter((s: any) => s.Type === 'Subtitle' && s.IsTextSubtitleStream);
+        
+        const parsedSubs: SubtitleTrack[] = subStreams.map((s: any) => ({
+            Index: s.Index,
+            Language: s.Language || 'Unknown',
+            Title: s.Title || s.Language || 'Unknown',
+            IsDefault: s.IsDefault || false
+        }));
+        
+        setSubtitles(parsedSubs);
+        
+        const defaultSub = parsedSubs.find(s => s.IsDefault);
+        if (defaultSub) {
+            setActiveSubtitleIndex(defaultSub.Index);
+        }
+
+        const directUrl = buildDirectStreamUrl(movie.id, mSourceId);
 
         const video = videoRef.current;
         if (!video || !isMounted) return;
@@ -229,13 +262,25 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
 
         <video 
           ref={videoRef}
+          crossOrigin="anonymous"
           className="w-full h-full object-contain"
           onTimeUpdate={handleTimeUpdate}
           onDurationChange={handleDurationChange}
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
           onClick={() => setIsPlaying(!isPlaying)}
-        />
+        >
+          {activeSubtitleIndex !== null && mediaSourceId && (
+            <track
+              key={activeSubtitleIndex}
+              kind="subtitles"
+              src={`${getServerUrl()}/Videos/${movie.id}/${mediaSourceId}/Subtitles/${activeSubtitleIndex}/0/Stream.vtt?api_key=${localStorage.getItem('jellyfin_token')}`}
+              srcLang={subtitles.find(s => s.Index === activeSubtitleIndex)?.Language || 'en'}
+              label={subtitles.find(s => s.Index === activeSubtitleIndex)?.Title || 'Subtitle'}
+              default
+            />
+          )}
+        </video>
 
         {/* Floating Play/Pause State indicator overlay if clicked inside */}
         {!loading && !error && (
@@ -369,6 +414,56 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
             >
               <Maximize className="w-4 h-4" />
             </button>
+            
+            {/* Subtitles Button & Menu */}
+            {subtitles.length > 0 && (
+              <div className="relative">
+                <button 
+                  onClick={() => setShowSubtitleMenu(!showSubtitleMenu)}
+                  className={`p-2 border border-white/10 hover:bg-white/10 rounded-lg transition-all text-on-surface ${
+                    activeSubtitleIndex !== null ? 'bg-primary/20 text-primary border-primary/50' : ''
+                  }`}
+                  title="Subtitles"
+                >
+                  <Subtitles className="w-4 h-4" />
+                </button>
+
+                {showSubtitleMenu && (
+                  <div className="absolute bottom-full right-0 mb-2 w-48 bg-[#0c0a10] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
+                    <div className="p-2 border-b border-white/10 text-xs font-bold text-on-surface-variant uppercase tracking-wider">
+                      Subtitles
+                    </div>
+                    <div className="max-h-48 overflow-y-auto">
+                      <button
+                        onClick={() => {
+                          setActiveSubtitleIndex(null);
+                          setShowSubtitleMenu(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                          activeSubtitleIndex === null ? 'bg-primary text-on-primary font-bold' : 'hover:bg-white/5 text-white'
+                        }`}
+                      >
+                        Off
+                      </button>
+                      {subtitles.map((sub) => (
+                        <button
+                          key={sub.Index}
+                          onClick={() => {
+                            setActiveSubtitleIndex(sub.Index);
+                            setShowSubtitleMenu(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                            activeSubtitleIndex === sub.Index ? 'bg-primary text-on-primary font-bold' : 'hover:bg-white/5 text-white'
+                          }`}
+                        >
+                          {sub.Title}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
