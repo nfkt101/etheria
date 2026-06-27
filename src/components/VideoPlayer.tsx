@@ -131,7 +131,8 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
           setLoading(false);
           video.play().catch(e => {
             if (e.name !== 'AbortError') {
-              console.error("Auto-play prevented", e);
+              console.error("Playback error:", e);
+              if (isMounted) setError(`Playback error: ${e.message || 'Format not supported'}`);
             }
           });
         };
