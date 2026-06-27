@@ -94,8 +94,10 @@ export const getPlaybackInfo = async (itemId: string, userId: string) => {
   return data;
 };
 
-export const buildDirectStreamUrl = (itemId: string, mediaSourceId: string) => {
-  // Use HLS main playlist and specify supported codecs so Jellyfin can generate the manifest correctly.
-  // We restrict AudioCodec to aac,mp3 to force Jellyfin to transcode AC3/DTS audio to a browser-compatible format.
-  return `${getServerUrl()}/Videos/${itemId}/main.m3u8?MediaSourceId=${mediaSourceId}&VideoCodec=h264,h265,hevc,vp8,vp9,av1&AudioCodec=aac,mp3&api_key=${localStorage.getItem('jellyfin_token')}`;
+export const buildDirectStreamUrl = (itemId: string, mediaSourceId: string, audioStreamIndex?: number) => {
+  let url = `${getServerUrl()}/Videos/${itemId}/stream?static=true&MediaSourceId=${mediaSourceId}&api_key=${localStorage.getItem('jellyfin_token')}`;
+  if (audioStreamIndex !== undefined && audioStreamIndex !== null) {
+    url += `&AudioStreamIndex=${audioStreamIndex}`;
+  }
+  return url;
 };

@@ -1,10 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Movie } from '../types';
-import { Play, Pause, Volume2, VolumeX, X, RotateCcw, Settings, SkipForward, Maximize, Subtitles, Activity } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, X, RotateCcw, Settings, SkipForward, Maximize, Subtitles, Activity, ArrowLeft } from 'lucide-react';
 import { getPlaybackInfo, buildDirectStreamUrl, getServerUrl } from '../services/jellyfin';
 import Hls from 'hls.js';
 
 interface SubtitleTrack {
+  Index: number;
+  Language: string;
+  Title: string;
+  IsDefault: boolean;
+}
+
+interface AudioTrack {
   Index: number;
   Language: string;
   Title: string;
@@ -20,25 +27,54 @@ interface VideoPlayerProps {
 export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(1); // avoid divide by zero
-  const [volume, setVolume] = useState(0.85);
+  const [duration, setDuration] = useState(1);
+  const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   
-  // Subtitle States
+  // Subtitles
   const [subtitles, setSubtitles] = useState<SubtitleTrack[]>([]);
   const [activeSubtitleIndex, setActiveSubtitleIndex] = useState<number | null>(null);
   const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+  
+  // Audio Tracks
+  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
+  const [activeAudioIndex, setActiveAudioIndex] = useState<number | null>(null);
+  const [showAudioMenu, setShowAudioMenu] = useState(false);
+
   const [mediaSourceId, setMediaSourceId] = useState<string>('');
   
+  // Inactivity timeout
+  const [showControls, setShowControls] = useState(true);
+  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  const resetControlsTimeout = () => {
+    setShowControls(true);
+    if (controlsTimeoutRef.current) {
+      clearTimeout(controlsTimeoutRef.current);
+    }
+    controlsTimeoutRef.current = setTimeout(() => {
+      if (isPlaying) {
+        setShowControls(false);
+        setShowSubtitleMenu(false);
+      }
+    }, 2500);
+  };
+
+  useEffect(() => {
+    resetControlsTimeout();
+    return () => {
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    };
+  }, [isPlaying]);
 
   useEffect(() => {
     let isMounted = true;
-    let hls: Hls | null = null;
     const initPlayer = async () => {
       try {
         setLoading(true);
@@ -56,73 +92,55 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
         // Extract subtitle streams
         const streams = playbackInfo.MediaSources[0].MediaStreams || [];
         const subStreams = streams.filter((s: any) => s.Type === 'Subtitle' && s.IsTextSubtitleStream);
-        
         const parsedSubs: SubtitleTrack[] = subStreams.map((s: any) => ({
             Index: s.Index,
             Language: s.Language || 'Unknown',
             Title: s.Title || s.Language || 'Unknown',
             IsDefault: s.IsDefault || false
         }));
-        
         setSubtitles(parsedSubs);
-        
         const defaultSub = parsedSubs.find(s => s.IsDefault);
         if (defaultSub) {
             setActiveSubtitleIndex(defaultSub.Index);
         }
 
-        const directUrl = buildDirectStreamUrl(movie.id, mSourceId);
+        // Extract audio streams
+        const audioStreams = streams.filter((s: any) => s.Type === 'Audio');
+        const parsedAudio: AudioTrack[] = audioStreams.map((s: any) => ({
+            Index: s.Index,
+            Language: s.Language || 'Unknown',
+            Title: s.Title || s.Language || 'Unknown',
+            IsDefault: s.IsDefault || false
+        }));
+        setAudioTracks(parsedAudio);
+        const defaultAudio = parsedAudio.find(s => s.IsDefault) || parsedAudio[0];
+        let currentAudioIndex = defaultAudio ? defaultAudio.Index : undefined;
+        if (defaultAudio) {
+            setActiveAudioIndex(defaultAudio.Index);
+        }
+
+        const directUrl = buildDirectStreamUrl(movie.id, mSourceId, currentAudioIndex);
 
         const video = videoRef.current;
         if (!video || !isMounted) return;
 
-        if (Hls.isSupported()) {
-          hls = new Hls({
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-          });
-          hls.loadSource(directUrl);
-          hls.attachMedia(video);
-          hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            if (!isMounted) return;
-            setLoading(false);
-            video.play().catch(e => {
-              if (e.name !== 'AbortError') console.error("Auto-play prevented", e);
-            });
-          });
-          hls.on(Hls.Events.ERROR, (event, data) => {
-            if (data.fatal) {
-              switch (data.type) {
-                case Hls.ErrorTypes.NETWORK_ERROR:
-                  console.error("fatal network error encountered, try to recover");
-                  hls?.startLoad();
-                  break;
-                case Hls.ErrorTypes.MEDIA_ERROR:
-                  console.error("fatal media error encountered, try to recover");
-                  hls?.recoverMediaError();
-                  break;
-                default:
-                  if (!isMounted) return;
-                  setError('Video playback failed (HLS Error).');
-                  setLoading(false);
-                  hls?.destroy();
-                  break;
-              }
+        video.src = directUrl;
+        
+        video.onloadedmetadata = () => {
+          if (!isMounted) return;
+          setLoading(false);
+          video.play().catch(e => {
+            if (e.name !== 'AbortError') {
+              console.error("Auto-play prevented", e);
             }
           });
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = directUrl;
-          video.addEventListener('loadedmetadata', () => {
-            if (!isMounted) return;
-            setLoading(false);
-            video.play().catch(e => {
-              if (e.name !== 'AbortError') console.error("Auto-play prevented", e);
-            });
-          });
-        } else {
-          setError('HLS is not supported in this browser.');
+        };
+        
+        video.onerror = (e) => {
+          if (!isMounted) return;
+          setError('Video playback failed. The browser might not support the format.');
           setLoading(false);
-        }
+        };
         
       } catch (err: any) {
         if (!isMounted) return;
@@ -136,9 +154,6 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
 
     return () => {
       isMounted = false;
-      if (hls) {
-        hls.destroy();
-      }
       if (videoRef.current) {
         videoRef.current.pause();
         videoRef.current.removeAttribute('src');
@@ -172,11 +187,8 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
-      
-      // Update progress
       if (onUpdateProgress && videoRef.current.duration > 0) {
         const pct = (videoRef.current.currentTime / videoRef.current.duration) * 100;
-        // Only update occasionally to avoid thrashing state
         if (Math.floor(pct) % 5 === 0) {
             onUpdateProgress(Math.floor(pct));
         }
@@ -187,7 +199,6 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
   const handleDurationChange = () => {
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
-      // If we had a saved progress, seek to it
       if (movie.progress && movie.progress > 0 && movie.progress < 95) {
           const seekTime = (movie.progress / 100) * videoRef.current.duration;
           videoRef.current.currentTime = seekTime;
@@ -214,256 +225,289 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  return (
-    <div id="video-theater-overlay" className="fixed inset-0 bg-[#07070a] z-[999] flex flex-col justify-between p-4 md:p-8 animate-entrance-hero text-white">
-      {/* Top Header Controls */}
-      <div className="flex justify-between items-center z-10">
-        <div>
-          <span className="text-xs uppercase text-primary tracking-widest font-bold font-label-md">ETHERIA THEATER ACTIVE</span>
-          <h2 className="text-xl md:text-2xl font-bold tracking-tight">{movie.title}</h2>
-          <p className="text-xs text-on-surface-variant line-clamp-1">{movie.tagline}</p>
-        </div>
+  const handleAudioChange = (index: number) => {
+    if (activeAudioIndex === index) return;
+    const time = videoRef.current?.currentTime || 0;
+    setActiveAudioIndex(index);
+    if (videoRef.current) {
+      videoRef.current.src = buildDirectStreamUrl(movie.id, mediaSourceId, index);
+      videoRef.current.currentTime = time;
+      videoRef.current.play().catch(e => console.error(e));
+    }
+  };
 
-        <div className="flex items-center gap-2 md:gap-4">
+  const togglePlayPause = () => {
+    setIsPlaying(!isPlaying);
+    resetControlsTimeout();
+  };
+
+  const skipTime = (amount: number) => {
+    const newTime = Math.max(0, Math.min(duration, currentTime + amount));
+    setCurrentTime(newTime);
+    if (videoRef.current) videoRef.current.currentTime = newTime;
+    resetControlsTimeout();
+  };
+
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      document.getElementById('video-theater-wrapper')?.requestFullscreen();
+    }
+    resetControlsTimeout();
+  };
+
+  const progressPercent = (currentTime / (duration || 1)) * 100;
+
+  return (
+    <div 
+      id="video-theater-wrapper" 
+      className={`fixed inset-0 bg-black z-[999] flex flex-col justify-between overflow-hidden text-white ${!showControls && isPlaying ? 'cursor-none' : ''}`}
+      onMouseMove={resetControlsTimeout}
+      onClick={resetControlsTimeout}
+      onTouchStart={resetControlsTimeout}
+    >
+      {/* Main Video Background */}
+      <video 
+        ref={videoRef}
+        crossOrigin="anonymous"
+        className="absolute inset-0 w-full h-full object-contain"
+        onTimeUpdate={handleTimeUpdate}
+        onDurationChange={handleDurationChange}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+        onClick={togglePlayPause}
+      >
+        {activeSubtitleIndex !== null && mediaSourceId && (
+          <track
+            key={activeSubtitleIndex}
+            kind="subtitles"
+            src={`${getServerUrl()}/Videos/${movie.id}/${mediaSourceId}/Subtitles/${activeSubtitleIndex}/0/Stream.vtt?api_key=${localStorage.getItem('jellyfin_token')}`}
+            srcLang={subtitles.find(s => s.Index === activeSubtitleIndex)?.Language || 'en'}
+            label={subtitles.find(s => s.Index === activeSubtitleIndex)?.Title || 'Subtitle'}
+            default
+          />
+        )}
+      </video>
+
+      {/* Loading Overlay */}
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
+          <span className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+
+      {/* Error Overlay */}
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-20 text-red-400 font-bold p-4 text-center">
+          {error}
+        </div>
+      )}
+
+      {/* Technical Diagnostics Overlay */}
+      {showDiagnostics && (
+        <div className="absolute top-20 left-4 bg-black/80 p-4 rounded-xl border border-white/10 font-mono text-[10px] md:text-xs text-green-400 space-y-1.5 shadow-2xl backdrop-blur-md pointer-events-none z-30">
+          <p className="text-white font-bold border-b border-white/10 pb-1 mb-1">STREAM DIAGNOSTICS</p>
+          <p>Source: JellyFin Stream</p>
+          <p>Duration: {formatTime(duration)}</p>
+          <p>Current Time: {formatTime(currentTime)}</p>
+        </div>
+      )}
+
+      {/* UI Wrapper (Fades out when inactive) */}
+      <div 
+        className={`absolute inset-0 flex flex-col justify-between pointer-events-none transition-opacity duration-300 ${showControls ? 'opacity-100' : 'opacity-0'}`}
+      >
+        {/* Top Header Gradient & Controls */}
+        <div className="w-full bg-gradient-to-b from-black/80 via-black/40 to-transparent p-6 pointer-events-auto flex justify-between items-start pt-8">
+          <button 
+            onClick={onClose}
+            className="group flex items-center justify-center p-2 rounded-full hover:bg-white/10 transition-colors"
+            title="Back"
+          >
+            <ArrowLeft className="w-8 h-8 text-white group-hover:text-primary transition-colors" />
+          </button>
+          
           <button 
             onClick={() => setShowDiagnostics(!showDiagnostics)}
-            className={`p-2 rounded-lg border transition-all ${
-              showDiagnostics ? 'bg-primary/20 border-primary text-primary' : 'bg-white/5 border-white/10 hover:bg-white/10'
-            }`}
+            className="p-2 rounded-full hover:bg-white/10 transition-colors text-white/50 hover:text-white"
             title="Stream Diagnostics"
           >
             <Activity className="w-5 h-5" />
           </button>
-
-          <button 
-            onClick={onClose}
-            className="p-2 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 hover:text-[#ffb4ab] transition-transform hover:scale-105"
-            title="Exit Cinema Mode"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-      </div>
-
-      {/* Main Screen Projection Center */}
-      <div className="relative flex-1 flex items-center justify-center my-4 overflow-hidden rounded-xl border border-white/10 bg-black shadow-[0_0_50px_rgba(124,77,255,0.15)] group">
-        
-        {loading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
-                <span className="w-10 h-10 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-            </div>
-        )}
-
-        {error && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20 text-red-400">
-                {error}
-            </div>
-        )}
-
-        <video 
-          ref={videoRef}
-          crossOrigin="anonymous"
-          className="w-full h-full object-contain"
-          onTimeUpdate={handleTimeUpdate}
-          onDurationChange={handleDurationChange}
-          onPlay={() => setIsPlaying(true)}
-          onPause={() => setIsPlaying(false)}
-          onClick={() => setIsPlaying(!isPlaying)}
-        >
-          {activeSubtitleIndex !== null && mediaSourceId && (
-            <track
-              key={activeSubtitleIndex}
-              kind="subtitles"
-              src={`${getServerUrl()}/Videos/${movie.id}/${mediaSourceId}/Subtitles/${activeSubtitleIndex}/0/Stream.vtt?api_key=${localStorage.getItem('jellyfin_token')}`}
-              srcLang={subtitles.find(s => s.Index === activeSubtitleIndex)?.Language || 'en'}
-              label={subtitles.find(s => s.Index === activeSubtitleIndex)?.Title || 'Subtitle'}
-              default
-            />
-          )}
-        </video>
-
-        {/* Floating Play/Pause State indicator overlay if clicked inside */}
-        {!loading && !error && (
-          <div 
-            onClick={() => setIsPlaying(!isPlaying)}
-            className="absolute inset-0 cursor-pointer flex items-center justify-center bg-transparent"
-          >
-            <div className={`transition-opacity duration-300 p-4 rounded-full bg-black/60 border border-white/20 transform scale-100 ${isPlaying ? 'opacity-0 group-hover:opacity-100 scale-90' : 'opacity-100'}`}>
-              {isPlaying ? <Pause className="w-12 h-12 text-primary" /> : <Play className="w-12 h-12 text-primary pl-1" />}
-            </div>
-          </div>
-        )}
-
-        {/* Technical Diagnostics Overlay */}
-        {showDiagnostics && (
-          <div className="absolute top-4 left-4 bg-black/90 p-4 rounded-xl border border-white/10 font-mono text-[10px] md:text-xs text-green-400 space-y-1.5 shadow-2xl backdrop-blur-md pointer-events-none z-30">
-            <p className="text-white font-bold border-b border-white/10 pb-1 mb-1">STREAM DIAGNOSTICS</p>
-            <p>Source: JellyFin Direct Stream</p>
-            <p>Player: Native HTML5</p>
-            <p>Duration: {formatTime(duration)}</p>
-            <p>Current Time: {formatTime(currentTime)}</p>
-          </div>
-        )}
-      </div>
-
-      {/* Player Navigation Bottom Controls bar */}
-      <div className="glass-card p-4 md:p-6 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-md z-10">
-        {/* Progress Timeline seek bar */}
-        <div className="flex items-center gap-3 mb-4">
-          <span className="font-mono text-xs text-on-surface-variant w-12 text-center">{formatTime(currentTime)}</span>
-          <input
-            type="range"
-            min={0}
-            max={duration || 100}
-            value={currentTime}
-            onChange={handleSeek}
-            className="flex-1 accent-primary h-1.5 bg-white/15 rounded-lg cursor-pointer hover:h-2 transition-all"
-            style={{
-              background: `linear-gradient(to right, #cdbdff ${(currentTime / (duration || 1)) * 100}%, rgba(255,255,255,0.1) ${(currentTime / (duration || 1)) * 100}%)`,
-            }}
-          />
-          <span className="font-mono text-xs text-on-surface-variant w-12 text-center">{formatTime(duration)}</span>
         </div>
 
-        {/* Media Buttons Row */}
-        <div className="flex flex-wrap justify-between items-center gap-4">
-          {/* Playback Controls */}
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={() => setIsPlaying(!isPlaying)}
-              className="p-3 bg-primary rounded-full text-on-primary hover:scale-105 transition-all shadow-[0_0_20px_rgba(205,189,255,0.3)] pulse-btn"
-            >
-              {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
-            </button>
-
-            <button 
-              onClick={() => {
-                const newTime = Math.max(0, currentTime - 10);
-                setCurrentTime(newTime);
-                if (videoRef.current) videoRef.current.currentTime = newTime;
-              }}
-              className="p-2 border border-white/10 hover:bg-white/10 rounded-lg text-on-surface transition-all"
-              title="-10 Seconds"
-            >
-              <RotateCcw className="w-4 h-4" />
-            </button>
-
-            <button 
-              onClick={() => {
-                const newTime = Math.min(duration, currentTime + 10);
-                setCurrentTime(newTime);
-                if (videoRef.current) videoRef.current.currentTime = newTime;
-              }}
-              className="p-2 border border-white/10 hover:bg-white/10 rounded-lg text-on-surface transition-all"
-              title="+10 Seconds"
-            >
-              <SkipForward className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Volume and Audio controls */}
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={() => setIsMuted(!isMuted)}
-              className="p-2 border border-white/10 hover:bg-white/10 rounded-lg transition-all"
-            >
-              {isMuted || volume === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-            </button>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={isMuted ? 0 : volume}
-              onChange={(e) => {
-                setVolume(Number(e.target.value));
-                setIsMuted(false);
-              }}
-              className="w-20 md:w-28 accent-primary h-1 bg-white/15 rounded-lg cursor-pointer"
-            />
-          </div>
-
-          {/* Settings & Extras */}
-          <div className="flex items-center gap-3">
-            {/* Speed selection */}
-            <div className="flex items-center bg-white/5 border border-white/10 rounded-lg p-1 text-xs font-mono">
-              <span className="text-on-surface-variant px-1.5 hidden md:inline">Speed</span>
-              {[1, 1.5, 2].map((speed) => (
-                <button
-                  key={speed}
-                  onClick={() => setPlaybackSpeed(speed)}
-                  className={`px-2 py-0.5 rounded transition-colors ${
-                    playbackSpeed === speed ? 'bg-primary text-on-primary font-bold' : 'hover:bg-white/15 text-on-surface-variant'
-                  }`}
-                >
-                  {speed}x
-                </button>
-              ))}
+        {/* Bottom Controls Gradient & Controls */}
+        <div className="w-full bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-24 pb-6 px-4 md:px-8 pointer-events-auto space-y-4">
+          
+          {/* Progress Timeline */}
+          <div className="flex items-center gap-4 group cursor-pointer relative" onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const clickPos = (e.clientX - rect.left) / rect.width;
+            const newTime = clickPos * duration;
+            setCurrentTime(newTime);
+            if (videoRef.current) videoRef.current.currentTime = newTime;
+          }}>
+            <div className="w-full h-1 md:h-1.5 bg-white/30 rounded-full overflow-hidden transition-all duration-200 group-hover:h-2 md:group-hover:h-2.5 relative">
+              <div 
+                className="absolute top-0 left-0 h-full bg-primary"
+                style={{ width: `${progressPercent}%` }}
+              />
             </div>
+            <span className="font-mono text-sm font-bold w-24 text-right hidden md:block">
+              {formatTime(currentTime)} / {formatTime(duration)}
+            </span>
+          </div>
 
-            <button 
-              className="p-2 border border-white/10 hover:bg-white/10 rounded-lg transition-all text-on-surface"
-              title="Full Screen"
-              onClick={() => {
-                if (document.fullscreenElement) {
-                  document.exitFullscreen();
-                } else {
-                  document.getElementById('video-theater-overlay')?.requestFullscreen();
-                }
-              }}
-            >
-              <Maximize className="w-4 h-4" />
-            </button>
+          {/* Media Buttons Row */}
+          <div className="flex justify-between items-center mt-2">
             
-            {/* Subtitles Button & Menu */}
-            {subtitles.length > 0 && (
-              <div className="relative">
-                <button 
-                  onClick={() => setShowSubtitleMenu(!showSubtitleMenu)}
-                  className={`p-2 border border-white/10 hover:bg-white/10 rounded-lg transition-all text-on-surface ${
-                    activeSubtitleIndex !== null ? 'bg-primary/20 text-primary border-primary/50' : ''
-                  }`}
-                  title="Subtitles"
-                >
-                  <Subtitles className="w-4 h-4" />
+            <div className="flex items-center gap-4 md:gap-6">
+              <button onClick={togglePlayPause} className="hover:scale-110 transition-transform">
+                {isPlaying ? <Pause className="w-8 h-8 md:w-10 md:h-10 fill-current" /> : <Play className="w-8 h-8 md:w-10 md:h-10 fill-current pl-1" />}
+              </button>
+              
+              <button onClick={() => skipTime(-10)} className="hover:text-primary transition-colors" title="-10 Seconds">
+                <RotateCcw className="w-6 h-6 md:w-7 md:h-7" />
+              </button>
+              
+              <button onClick={() => skipTime(10)} className="hover:text-primary transition-colors" title="+10 Seconds">
+                <SkipForward className="w-6 h-6 md:w-7 md:h-7" />
+              </button>
+              
+              <div className="flex items-center gap-3 group relative">
+                <button onClick={() => setIsMuted(!isMuted)} className="hover:text-primary transition-colors">
+                  {isMuted || volume === 0 ? <VolumeX className="w-6 h-6 md:w-7 md:h-7" /> : <Volume2 className="w-6 h-6 md:w-7 md:h-7" />}
                 </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={isMuted ? 0 : volume}
+                  onChange={(e) => {
+                    setVolume(Number(e.target.value));
+                    setIsMuted(false);
+                  }}
+                  className="w-0 opacity-0 group-hover:w-24 group-hover:opacity-100 transition-all duration-300 accent-primary h-1 bg-white/30 rounded-full cursor-pointer overflow-hidden"
+                />
+              </div>
 
-                {showSubtitleMenu && (
-                  <div className="absolute bottom-full right-0 mb-2 w-48 bg-[#0c0a10] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50">
-                    <div className="p-2 border-b border-white/10 text-xs font-bold text-on-surface-variant uppercase tracking-wider">
-                      Subtitles
+              <div className="hidden md:block border-l border-white/20 h-8 ml-2 pl-6">
+                <h2 className="text-xl font-bold truncate max-w-sm">{movie.title}</h2>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 md:gap-6">
+              {/* Speed Button */}
+              <div className="relative group">
+                <button className="font-bold text-sm md:text-base hover:text-primary transition-colors flex items-center gap-1">
+                  {playbackSpeed}x
+                </button>
+                <div className="absolute bottom-full right-0 mb-4 bg-[#141416] border border-white/10 rounded-xl shadow-2xl py-2 w-16 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all">
+                  {[0.5, 1, 1.25, 1.5, 2].map((speed) => (
+                    <button
+                      key={speed}
+                      onClick={() => setPlaybackSpeed(speed)}
+                      className={`w-full text-center py-2 text-sm transition-colors ${playbackSpeed === speed ? 'text-primary font-bold bg-white/5' : 'hover:bg-white/10 text-white'}`}
+                    >
+                      {speed}x
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Audio Menu */}
+              {audioTracks.length > 1 && (
+                <div className="relative">
+                  <button 
+                    onClick={() => {
+                      setShowAudioMenu(!showAudioMenu);
+                      setShowSubtitleMenu(false);
+                    }}
+                    className={`hover:text-primary transition-colors ${activeAudioIndex !== null ? 'text-primary' : ''}`}
+                    title="Audio Tracks"
+                  >
+                    <Volume2 className="w-6 h-6 md:w-7 md:h-7" />
+                  </button>
+
+                  {showAudioMenu && (
+                    <div className="absolute bottom-full right-0 mb-4 bg-[#141416] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 w-48">
+                      <div className="p-3 border-b border-white/10 text-xs font-bold text-on-surface-variant uppercase tracking-wider">
+                        Audio
+                      </div>
+                      <div className="max-h-48 overflow-y-auto hide-scrollbar">
+                        {audioTracks.map((audio) => (
+                          <button
+                            key={audio.Index}
+                            onClick={() => {
+                              handleAudioChange(audio.Index);
+                              setShowAudioMenu(false);
+                            }}
+                            className={`w-full text-left px-4 py-3 text-sm transition-colors ${activeAudioIndex === audio.Index ? 'bg-primary/20 text-primary font-bold' : 'hover:bg-white/10 text-white'}`}
+                          >
+                            {audio.Title}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="max-h-48 overflow-y-auto">
-                      <button
-                        onClick={() => {
-                          setActiveSubtitleIndex(null);
-                          setShowSubtitleMenu(false);
-                        }}
-                        className={`w-full text-left px-3 py-2 text-sm transition-colors ${
-                          activeSubtitleIndex === null ? 'bg-primary text-on-primary font-bold' : 'hover:bg-white/5 text-white'
-                        }`}
-                      >
-                        Off
-                      </button>
-                      {subtitles.map((sub) => (
+                  )}
+                </div>
+              )}
+
+              {/* Subtitles Menu */}
+              {subtitles.length > 0 && (
+                <div className="relative">
+                  <button 
+                    onClick={() => {
+                      setShowSubtitleMenu(!showSubtitleMenu);
+                      setShowAudioMenu(false);
+                    }}
+                    className={`hover:text-primary transition-colors ${activeSubtitleIndex !== null ? 'text-primary' : ''}`}
+                    title="Subtitles"
+                  >
+                    <Subtitles className="w-6 h-6 md:w-7 md:h-7" />
+                  </button>
+
+                  {showSubtitleMenu && (
+                    <div className="absolute bottom-full right-0 mb-4 bg-[#141416] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 w-48">
+                      <div className="p-3 border-b border-white/10 text-xs font-bold text-on-surface-variant uppercase tracking-wider">
+                        Subtitles
+                      </div>
+                      <div className="max-h-48 overflow-y-auto hide-scrollbar">
                         <button
-                          key={sub.Index}
                           onClick={() => {
-                            setActiveSubtitleIndex(sub.Index);
+                            setActiveSubtitleIndex(null);
                             setShowSubtitleMenu(false);
                           }}
-                          className={`w-full text-left px-3 py-2 text-sm transition-colors ${
-                            activeSubtitleIndex === sub.Index ? 'bg-primary text-on-primary font-bold' : 'hover:bg-white/5 text-white'
-                          }`}
+                          className={`w-full text-left px-4 py-3 text-sm transition-colors ${activeSubtitleIndex === null ? 'bg-primary/20 text-primary font-bold' : 'hover:bg-white/10 text-white'}`}
                         >
-                          {sub.Title}
+                          Off
                         </button>
-                      ))}
+                        {subtitles.map((sub) => (
+                          <button
+                            key={sub.Index}
+                            onClick={() => {
+                              setActiveSubtitleIndex(sub.Index);
+                              setShowSubtitleMenu(false);
+                            }}
+                            className={`w-full text-left px-4 py-3 text-sm transition-colors ${activeSubtitleIndex === sub.Index ? 'bg-primary/20 text-primary font-bold' : 'hover:bg-white/10 text-white'}`}
+                          >
+                            {sub.Title}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            )}
+                  )}
+                </div>
+              )}
+
+              {/* Fullscreen Toggle */}
+              <button onClick={toggleFullscreen} className="hover:text-primary transition-colors">
+                <Maximize className="w-6 h-6 md:w-7 md:h-7" />
+              </button>
+            </div>
+            
           </div>
         </div>
       </div>
