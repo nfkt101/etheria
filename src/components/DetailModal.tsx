@@ -93,7 +93,7 @@ export default function DetailModal({
                 className="flex items-center gap-2 bg-primary text-on-primary px-6 py-3 rounded-xl font-bold text-sm md:text-base hover:scale-103 active:scale-97 transition-all shadow-lg shadow-violet-500/25 pulse-btn cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-current" />
-                Play Feature
+                Play
               </button>
 
               <button 

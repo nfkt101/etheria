@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Movie } from '../types';
 import { Play, Pause, Volume2, VolumeX, X, RotateCcw, Settings, SkipForward, Maximize, Subtitles, Activity } from 'lucide-react';
 import { getPlaybackInfo, buildDirectStreamUrl } from '../services/jellyfin';
+import Hls from 'hls.js';
 
 interface VideoPlayerProps {
   movie: Movie;
@@ -24,6 +25,7 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
 
   useEffect(() => {
     let isMounted = true;
+    let hls: Hls | null = null;
     const initPlayer = async () => {
       try {
         setLoading(true);
@@ -41,23 +43,53 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
         const video = videoRef.current;
         if (!video || !isMounted) return;
 
-        video.src = directUrl;
-        
-        video.onloadedmetadata = () => {
-          if (!isMounted) return;
-          setLoading(false);
-          video.play().catch(e => {
-            if (e.name !== 'AbortError') {
-              console.error("Auto-play prevented", e);
+        if (Hls.isSupported()) {
+          hls = new Hls({
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+          });
+          hls.loadSource(directUrl);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            if (!isMounted) return;
+            setLoading(false);
+            video.play().catch(e => {
+              if (e.name !== 'AbortError') console.error("Auto-play prevented", e);
+            });
+          });
+          hls.on(Hls.Events.ERROR, (event, data) => {
+            if (data.fatal) {
+              switch (data.type) {
+                case Hls.ErrorTypes.NETWORK_ERROR:
+                  console.error("fatal network error encountered, try to recover");
+                  hls?.startLoad();
+                  break;
+                case Hls.ErrorTypes.MEDIA_ERROR:
+                  console.error("fatal media error encountered, try to recover");
+                  hls?.recoverMediaError();
+                  break;
+                default:
+                  if (!isMounted) return;
+                  setError('Video playback failed (HLS Error).');
+                  setLoading(false);
+                  hls?.destroy();
+                  break;
+              }
             }
           });
-        };
-        
-        video.onerror = (e) => {
-          if (!isMounted) return;
-          setError('Video playback failed. The browser might not support the format.');
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = directUrl;
+          video.addEventListener('loadedmetadata', () => {
+            if (!isMounted) return;
+            setLoading(false);
+            video.play().catch(e => {
+              if (e.name !== 'AbortError') console.error("Auto-play prevented", e);
+            });
+          });
+        } else {
+          setError('HLS is not supported in this browser.');
           setLoading(false);
-        };
+        }
         
       } catch (err: any) {
         if (!isMounted) return;
@@ -71,6 +103,9 @@ export default function VideoPlayer({ movie, onClose, onUpdateProgress }: VideoP
 
     return () => {
       isMounted = false;
+      if (hls) {
+        hls.destroy();
+      }
       if (videoRef.current) {
         videoRef.current.pause();
         videoRef.current.removeAttribute('src');

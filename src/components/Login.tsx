@@ -24,6 +24,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         ips.push(`192.168.1.${i}`);
         ips.push(`192.168.0.${i}`);
         ips.push(`10.0.0.${i}`);
+        ips.push(`172.16.95.${i}`);
       }
       return ips;
     };
@@ -44,7 +45,21 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
     const ips = generateIPs();
     try {
-      const foundUrl = await Promise.any(ips.map(checkIp));
+      let foundUrl = '';
+      const chunkSize = 50; // Process 50 IPs at a time to prevent browser connection limit queuing
+      
+      for (let i = 0; i < ips.length; i += chunkSize) {
+        const chunk = ips.slice(i, i + chunkSize);
+        try {
+          foundUrl = await Promise.any(chunk.map(checkIp));
+          break; // We found the server! Stop scanning other chunks.
+        } catch (err) {
+          // All IPs in this chunk failed, move to the next chunk
+        }
+      }
+
+      if (!foundUrl) throw new Error('Not found');
+      
       setServerUrl(foundUrl);
     } catch (err) {
       setError('Could not auto-detect a Jellyfin server on the local network.');
