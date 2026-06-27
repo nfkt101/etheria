@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { authenticateUser, getServerUrl } from '../services/jellyfin';
-import { Tv } from 'lucide-react';
+import { Tv, Search } from 'lucide-react';
 
 interface LoginProps {
   onLoginSuccess: () => void;
@@ -12,6 +12,46 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+
+  const handleAutoDetect = async () => {
+    setIsScanning(true);
+    setError('');
+
+    const generateIPs = () => {
+      const ips = ['127.0.0.1', 'localhost'];
+      for (let i = 1; i <= 254; i++) {
+        ips.push(`192.168.1.${i}`);
+        ips.push(`192.168.0.${i}`);
+        ips.push(`10.0.0.${i}`);
+      }
+      return ips;
+    };
+
+    const checkIp = async (ip: string): Promise<string> => {
+      const url = `http://${ip}:8096`;
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), 1000);
+      try {
+        await fetch(`${url}/health`, { mode: 'no-cors', signal: controller.signal });
+        clearTimeout(id);
+        return url;
+      } catch (e) {
+        clearTimeout(id);
+        throw new Error('Not found');
+      }
+    };
+
+    const ips = generateIPs();
+    try {
+      const foundUrl = await Promise.any(ips.map(checkIp));
+      setServerUrl(foundUrl);
+    } catch (err) {
+      setError('Could not auto-detect a Jellyfin server on the local network.');
+    } finally {
+      setIsScanning(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -50,7 +90,22 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         
         <form onSubmit={handleSubmit} className="space-y-4 text-left">
           <div>
-            <label className="block text-xs font-bold text-on-surface-variant uppercase tracking-wider mb-1.5">Server URL</label>
+            <div className="flex justify-between items-center mb-1.5">
+              <label className="block text-xs font-bold text-on-surface-variant uppercase tracking-wider">Server URL</label>
+              <button
+                type="button"
+                onClick={handleAutoDetect}
+                disabled={isScanning}
+                className="text-xs text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"
+              >
+                {isScanning ? (
+                  <span className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Search className="w-3 h-3" />
+                )}
+                {isScanning ? 'Scanning...' : 'Auto Detect'}
+              </button>
+            </div>
             <input 
               type="text" 
               value={serverUrl}
