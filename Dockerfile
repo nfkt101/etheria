@@ -7,11 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy package configuration
+# Copy package configuration and pre-built node_modules from host
 COPY package.json package-lock.json* ./
-
-# Install dependencies
-RUN npm install
+COPY node_modules ./node_modules
 
 # Copy the rest of the application
 COPY . .
