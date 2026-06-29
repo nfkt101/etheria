@@ -1,12 +1,12 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Tv, Search, Download, Server, User } from 'lucide-react';
+import { Tv, Search, Download, FolderOpen, User } from 'lucide-react';
 
 const NAV_ITEMS = [
   { path: '/', label: 'home', icon: <Tv className="w-5 h-5" /> },
   { path: '/search', label: 'search', icon: <Search className="w-5 h-5" /> },
   { path: '/downloads', label: 'downloads', icon: <Download className="w-5 h-5" /> },
-  { path: '/server', label: 'server', icon: <Server className="w-5 h-5" /> },
+  { path: '/local', label: 'local', icon: <FolderOpen className="w-5 h-5" /> },
   { path: '/profile', label: 'profile', icon: <User className="w-5 h-5" /> },
 ];
 

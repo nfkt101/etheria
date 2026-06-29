@@ -13,6 +13,7 @@ import Search from './pages/Search';
 import Downloads from './pages/Downloads';
 import Profile from './pages/Profile';
 import ServerMonitorPage from './pages/ServerMonitorPage';
+import LocalFiles from './pages/LocalFiles';
 import { useAuthStore } from './store/authStore';
 import { useLibraryStore } from './store/libraryStore';
 import { usePlayerStore } from './store/playerStore';
@@ -67,6 +68,7 @@ export default function App() {
           <Route path="tv" element={<TVShows />} />
           <Route path="search" element={<Search />} />
           <Route path="downloads" element={<Downloads />} />
+          <Route path="local" element={<LocalFiles />} />
           <Route path="server" element={<ServerMonitorPage />} />
           <Route path="profile" element={<Profile />} />
         </Route>

@@ -1,12 +1,46 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, Volume2, VolumeX, X, RotateCcw, SkipForward, Maximize, Subtitles, Activity, ArrowLeft } from 'lucide-react';
+import { Play, Pause, Volume2, VolumeX, X, RotateCcw, SkipForward, Maximize, Subtitles, Activity, ArrowLeft, Upload } from 'lucide-react';
 import { getPlaybackInfo, buildDirectStreamUrl, buildSubtitleUrl, reportPlaybackProgress, reportPlaybackStopped } from '../api/playback';
 import { getServerUrl } from '../api/client';
 import { usePlayerStore } from '../store/playerStore';
 import { useAuthStore } from '../store/authStore';
 
-interface SubtitleTrack { Index: number; Language: string; Title: string; IsDefault: boolean; }
+interface SubtitleTrack {
+  Index: number;
+  Language: string;
+  Title: string;
+  IsDefault: boolean;
+  Url?: string;
+}
 interface AudioTrack { Index: number; Language: string; Title: string; IsDefault: boolean; }
+
+// Robust SRT to WebVTT converter
+function srtToVtt(srtText: string): string {
+  let text = srtText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  let vtt = 'WEBVTT\n\n';
+  const blocks = text.split('\n\n');
+  
+  for (let block of blocks) {
+    if (!block.trim()) continue;
+    const lines = block.split('\n');
+    let startIdx = 0;
+    if (/^\d+$/.test(lines[0].trim())) {
+      startIdx = 1;
+    }
+    if (lines.length > startIdx) {
+      const timeLine = lines[startIdx].trim();
+      if (timeLine.includes('-->')) {
+        const vttTimeLine = timeLine.replace(/,/g, '.');
+        vtt += vttTimeLine + '\n';
+        for (let i = startIdx + 1; i < lines.length; i++) {
+          vtt += lines[i] + '\n';
+        }
+        vtt += '\n';
+      }
+    }
+  }
+  return vtt;
+}
 
 export default function VideoPlayer() {
   const activeItem = usePlayerStore((s) => s.activeItem);
@@ -54,13 +88,56 @@ export default function VideoPlayer() {
   }, [isPlaying]);
 
   useEffect(() => {
-    if (!activeItem || !userId) return;
+    if (!activeItem) return;
     let mounted = true;
 
     const init = async () => {
       try {
         setLoading(true);
         setError('');
+
+        if (activeItem.isLocal) {
+          const video = videoRef.current;
+          if (!video || !mounted) return;
+          video.src = activeItem.localUrl || '';
+          
+          if (activeItem.localSubtitleUrl) {
+            setSubtitles([
+              { Index: 999, Language: 'Local', Title: 'External Subtitles', IsDefault: true, Url: activeItem.localSubtitleUrl }
+            ]);
+            setActiveSubtitleIndex(999);
+          } else {
+            setSubtitles([]);
+          }
+
+          video.onloadedmetadata = () => {
+            if (!mounted) return;
+            setLoading(false);
+            const progressKey = `etheria_local_progress_${activeItem.id}`;
+            const savedProgress = localStorage.getItem(progressKey);
+            if (savedProgress) {
+              const savedTime = parseFloat(savedProgress);
+              if (savedTime > 0 && savedTime < video.duration - 5) {
+                video.currentTime = savedTime;
+              }
+            } else if (activeItem.progress > 0 && activeItem.progress < 95) {
+              video.currentTime = (activeItem.progress / 100) * video.duration;
+            }
+            video.play().catch((e) => {
+              if (e.name !== 'AbortError' && mounted) setError(`Playback error: ${e.message}`);
+            });
+          };
+
+          video.onerror = () => {
+            if (!mounted) return;
+            setError('Video playback failed. Check if your platform supports this file format/codec.');
+            setLoading(false);
+          };
+          return;
+        }
+
+        // Standard Jellyfin media initialization
+        if (!userId) return;
         const info = await getPlaybackInfo(activeItem.id, userId);
         if (!info.MediaSources?.length) throw new Error('No media sources available');
 
@@ -112,19 +189,42 @@ export default function VideoPlayer() {
     init();
 
     // Report progress to Jellyfin every 30s
-    progressReportRef.current = setInterval(() => {
-      if (videoRef.current && userId && activeItem) {
-        const ticks = Math.floor(videoRef.current.currentTime * 10_000_000);
-        reportPlaybackProgress(activeItem.id, userId, ticks, !isPlaying);
-      }
-    }, 30_000);
+    if (!activeItem.isLocal && userId) {
+      progressReportRef.current = setInterval(() => {
+        if (videoRef.current && userId && activeItem) {
+          const ticks = Math.floor(videoRef.current.currentTime * 10_000_000);
+          reportPlaybackProgress(activeItem.id, userId, ticks, !isPlaying);
+        }
+      }, 30_000);
+    }
 
     return () => {
       mounted = false;
       if (progressReportRef.current) clearInterval(progressReportRef.current);
-      if (videoRef.current && userId && activeItem) {
-        const ticks = Math.floor((videoRef.current.currentTime || 0) * 10_000_000);
-        reportPlaybackStopped(activeItem.id, userId, ticks);
+      if (videoRef.current) {
+        if (activeItem.isLocal) {
+          const progressKey = `etheria_local_progress_${activeItem.id}`;
+          localStorage.setItem(progressKey, String(videoRef.current.currentTime));
+          
+          const historyStr = localStorage.getItem('etheria_local_history');
+          if (historyStr) {
+            try {
+              const history = JSON.parse(historyStr);
+              const idx = history.findIndex((h: any) => h.id === activeItem.id);
+              if (idx !== -1) {
+                const pct = Math.floor((videoRef.current.currentTime / (videoRef.current.duration || 1)) * 100);
+                history[idx].progress = pct;
+                history[idx].lastPlayedDate = new Date().toISOString();
+                localStorage.setItem('etheria_local_history', JSON.stringify(history));
+              }
+            } catch (e) {
+              console.error(e);
+            }
+          }
+        } else if (userId) {
+          const ticks = Math.floor((videoRef.current.currentTime || 0) * 10_000_000);
+          reportPlaybackStopped(activeItem.id, userId, ticks);
+        }
         videoRef.current.pause();
         videoRef.current.removeAttribute('src');
         videoRef.current.load();
@@ -149,20 +249,72 @@ export default function VideoPlayer() {
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
-    setCurrentTime(videoRef.current.currentTime);
+    const time = videoRef.current.currentTime;
+    setCurrentTime(time);
     if (videoRef.current.duration > 0) {
-      const pct = (videoRef.current.currentTime / videoRef.current.duration) * 100;
-      if (Math.floor(pct) % 5 === 0) updateProgress(Math.floor(pct));
+      const pct = (time / videoRef.current.duration) * 100;
+      if (Math.floor(pct) % 5 === 0) {
+        updateProgress(Math.floor(pct));
+        
+        if (activeItem.isLocal) {
+          const progressKey = `etheria_local_progress_${activeItem.id}`;
+          localStorage.setItem(progressKey, String(time));
+          
+          const historyStr = localStorage.getItem('etheria_local_history');
+          if (historyStr) {
+            try {
+              const history = JSON.parse(historyStr);
+              const idx = history.findIndex((h: any) => h.id === activeItem.id);
+              if (idx !== -1) {
+                history[idx].progress = Math.floor(pct);
+                history[idx].lastPlayedDate = new Date().toISOString();
+                localStorage.setItem('etheria_local_history', JSON.stringify(history));
+              }
+            } catch (e) {}
+          }
+        }
+      }
     }
   };
 
   const handleAudioChange = (index: number) => {
-    if (activeAudioIndex === index || !videoRef.current) return;
+    if (activeAudioIndex === index || !videoRef.current || activeItem.isLocal) return;
     const time = videoRef.current.currentTime;
     setActiveAudioIndex(index);
-    videoRef.current.src = buildDirectStreamUrl(activeItem!.id, mediaSourceId, index);
+    videoRef.current.src = buildDirectStreamUrl(activeItem.id, mediaSourceId, index);
     videoRef.current.currentTime = time;
     videoRef.current.play().catch(() => {});
+  };
+
+  const handleCustomSubtitleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      let vttText = text;
+      if (file.name.endsWith('.srt')) {
+        vttText = srtToVtt(text);
+      }
+      
+      const blob = new Blob([vttText], { type: 'text/vtt' });
+      const url = URL.createObjectURL(blob);
+      const newTrackIndex = subtitles.length + 1000;
+      
+      const newTrack: SubtitleTrack = {
+        Index: newTrackIndex,
+        Language: 'Custom',
+        Title: file.name,
+        IsDefault: true,
+        Url: url
+      };
+      
+      setSubtitles((prev) => [...prev, newTrack]);
+      setActiveSubtitleIndex(newTrackIndex);
+      setShowSubtitleMenu(false);
+    };
+    reader.readAsText(file);
   };
 
   const skipTime = (amount: number) => {
@@ -191,6 +343,8 @@ export default function VideoPlayer() {
   if (!activeItem) return null;
   const pct = (currentTime / (duration || 1)) * 100;
 
+  const currentSub = subtitles.find((s) => s.Index === activeSubtitleIndex);
+
   return (
     <div
       id="video-theater-wrapper"
@@ -202,20 +356,20 @@ export default function VideoPlayer() {
       <video
         ref={videoRef}
         crossOrigin="anonymous"
-        className="absolute inset-0 w-full h-full object-contain"
+        className="absolute inset-0 w-full h-full object-contain animate-entrance"
         onTimeUpdate={handleTimeUpdate}
         onDurationChange={() => setDuration(videoRef.current?.duration || 1)}
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onClick={() => setIsPlaying((p) => !p)}
       >
-        {activeSubtitleIndex !== null && mediaSourceId && (
+        {activeSubtitleIndex !== null && currentSub && (
           <track
             key={activeSubtitleIndex}
             kind="subtitles"
-            src={buildSubtitleUrl(activeItem.id, mediaSourceId, activeSubtitleIndex)}
-            srcLang={subtitles.find((s) => s.Index === activeSubtitleIndex)?.Language || 'en'}
-            label={subtitles.find((s) => s.Index === activeSubtitleIndex)?.Title || 'Subtitle'}
+            src={currentSub.Url || (mediaSourceId ? buildSubtitleUrl(activeItem.id, mediaSourceId, activeSubtitleIndex) : '')}
+            srcLang={currentSub.Language || 'en'}
+            label={currentSub.Title || 'Subtitle'}
             default
           />
         )}
@@ -227,17 +381,24 @@ export default function VideoPlayer() {
         </div>
       )}
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-20 text-red-400 font-bold p-4 text-center">
-          {error}
+        <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-20 text-red-400 font-bold p-6 text-center max-w-xl mx-auto rounded-3xl border border-red-500/10 flex-col gap-4">
+          <p>{error}</p>
+          <button onClick={close} className="px-5 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-white text-sm transition-all cursor-pointer">
+            Go Back
+          </button>
         </div>
       )}
       {showDiagnostics && (
-        <div className="absolute top-20 left-4 bg-black/80 p-4 rounded-xl border border-white/10 font-mono text-[10px] md:text-xs text-green-400 space-y-1.5 shadow-2xl backdrop-blur-md pointer-events-none z-30">
-          <p className="text-white font-bold border-b border-white/10 pb-1 mb-1">STREAM DIAGNOSTICS</p>
-          <p>Source: Jellyfin Stream</p>
+        <div className="absolute top-24 left-6 bg-[#141416]/95 p-5 rounded-2xl border border-white/10 font-mono text-[10px] md:text-xs text-green-400 space-y-2 shadow-2xl backdrop-blur-md pointer-events-none z-30 max-w-sm">
+          <p className="text-white font-bold border-b border-white/10 pb-1 mb-1 tracking-wider">ETHERIA DIAGNOSTICS</p>
+          <p>Playback: {activeItem.isLocal ? 'Local File' : 'Jellyfin Cloud'}</p>
           <p>Duration: {formatTime(duration)}</p>
           <p>Current: {formatTime(currentTime)}</p>
-          <p>Server: {getServerUrl()}</p>
+          {activeItem.isLocal ? (
+            <p className="break-all">Path: {activeItem.localPath || 'Local Asset URL'}</p>
+          ) : (
+            <p>Server: {getServerUrl()}</p>
+          )}
         </div>
       )}
 
@@ -253,7 +414,7 @@ export default function VideoPlayer() {
         </div>
 
         {/* Bottom controls */}
-        <div className="w-full bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-24 pb-6 px-4 md:px-8 pointer-events-auto space-y-4">
+        <div className="w-full bg-gradient-to-t from-black/95 via-black/70 to-transparent pt-24 pb-8 px-4 md:px-8 pointer-events-auto space-y-4">
           {/* Scrubber */}
           <div
             className="flex items-center gap-4 group cursor-pointer relative"
@@ -319,8 +480,8 @@ export default function VideoPlayer() {
                 </div>
               </div>
 
-              {/* Audio */}
-              {audioTracks.length > 1 && (
+              {/* Audio Tracks (Disabled for local streams since browser handle demuxing automatically) */}
+              {audioTracks.length > 1 && !activeItem.isLocal && (
                 <div className="relative">
                   <button
                     onClick={() => { setShowAudioMenu((m) => !m); setShowSubtitleMenu(false); }}
@@ -348,38 +509,42 @@ export default function VideoPlayer() {
               )}
 
               {/* Subtitles */}
-              {subtitles.length > 0 && (
-                <div className="relative">
-                  <button
-                    onClick={() => { setShowSubtitleMenu((m) => !m); setShowAudioMenu(false); }}
-                    className={`hover:text-primary transition-colors ${activeSubtitleIndex !== null ? 'text-primary' : ''}`}
-                  >
-                    <Subtitles className="w-6 h-6 md:w-7 md:h-7" />
-                  </button>
-                  {showSubtitleMenu && (
-                    <div className="absolute bottom-full right-0 mb-4 bg-[#141416] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 w-48">
-                      <div className="p-3 border-b border-white/10 text-xs font-bold text-on-surface-variant uppercase tracking-wider">Subtitles</div>
-                      <div className="max-h-48 overflow-y-auto hide-scrollbar">
-                        <button
-                          onClick={() => { setActiveSubtitleIndex(null); setShowSubtitleMenu(false); }}
-                          className={`w-full text-left px-4 py-3 text-sm transition-colors ${activeSubtitleIndex === null ? 'bg-primary/20 text-primary font-bold' : 'hover:bg-white/10 text-white'}`}
-                        >
-                          Off
-                        </button>
-                        {subtitles.map((sub) => (
-                          <button
-                            key={sub.Index}
-                            onClick={() => { setActiveSubtitleIndex(sub.Index); setShowSubtitleMenu(false); }}
-                            className={`w-full text-left px-4 py-3 text-sm transition-colors ${activeSubtitleIndex === sub.Index ? 'bg-primary/20 text-primary font-bold' : 'hover:bg-white/10 text-white'}`}
-                          >
-                            {sub.Title}
-                          </button>
-                        ))}
-                      </div>
+              <div className="relative">
+                <button
+                  onClick={() => { setShowSubtitleMenu((m) => !m); setShowAudioMenu(false); }}
+                  className={`hover:text-primary transition-colors ${activeSubtitleIndex !== null ? 'text-primary' : ''}`}
+                >
+                  <Subtitles className="w-6 h-6 md:w-7 md:h-7" />
+                </button>
+                {showSubtitleMenu && (
+                  <div className="absolute bottom-full right-0 mb-4 bg-[#141416] border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 w-60">
+                    <div className="p-3 border-b border-white/10 text-xs font-bold text-on-surface-variant uppercase tracking-wider flex justify-between items-center">
+                      <span>Subtitles</span>
+                      <label htmlFor="player-sub-upload" className="flex items-center gap-1 text-[10px] text-primary hover:text-white cursor-pointer transition-colors">
+                        <Upload className="w-3 h-3" /> Load SRT/VTT
+                      </label>
+                      <input id="player-sub-upload" type="file" accept=".vtt,.srt" onChange={handleCustomSubtitleUpload} className="hidden" />
                     </div>
-                  )}
-                </div>
-              )}
+                    <div className="max-h-48 overflow-y-auto hide-scrollbar">
+                      <button
+                        onClick={() => { setActiveSubtitleIndex(null); setShowSubtitleMenu(false); }}
+                        className={`w-full text-left px-4 py-3 text-sm transition-colors ${activeSubtitleIndex === null ? 'bg-primary/20 text-primary font-bold' : 'hover:bg-white/10 text-white'}`}
+                      >
+                        Off
+                      </button>
+                      {subtitles.map((sub) => (
+                        <button
+                          key={sub.Index}
+                          onClick={() => { setActiveSubtitleIndex(sub.Index); setShowSubtitleMenu(false); }}
+                          className={`w-full text-left px-4 py-3 text-sm transition-colors ${activeSubtitleIndex === sub.Index ? 'bg-primary/20 text-primary font-bold' : 'hover:bg-white/10 text-white'}`}
+                        >
+                          {sub.Title}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <button onClick={toggleFullscreen} className="hover:text-primary transition-colors">
                 <Maximize className="w-6 h-6 md:w-7 md:h-7" />

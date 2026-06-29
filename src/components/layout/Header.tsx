@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Search, Download, Server, Menu, X } from 'lucide-react';
+import { Search, Download, Server, Menu, X, FolderOpen } from 'lucide-react';
 import { PROFILE_AVATAR } from '../../data';
 import { useAuthStore } from '../../store/authStore';
 import MobileDrawer from './MobileDrawer';
@@ -71,6 +71,7 @@ export default function Header() {
               {[
                 { path: '/search', icon: <Search className="w-4 h-4" />, title: 'Search' },
                 { path: '/downloads', icon: <Download className="w-4 h-4" />, title: 'Downloads' },
+                { path: '/local', icon: <FolderOpen className="w-4 h-4" />, title: 'Local Player' },
                 { path: '/server', icon: <Server className="w-4 h-4" />, title: 'Server' },
               ].map(({ path, icon, title }) => (
                 <button

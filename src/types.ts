@@ -24,4 +24,9 @@ export interface MediaItem {
   cast?: string[];
   episodes?: Episode[];
   seasonEpisode?: string;
+  isLocal?: boolean;
+  localUrl?: string;
+  localPath?: string;
+  localSubtitleUrl?: string;
 }
+
