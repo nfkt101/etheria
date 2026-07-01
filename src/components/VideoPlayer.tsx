@@ -1,12 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
+import Hls from 'hls.js';
 import { Play, Pause, Volume2, VolumeX, X, RotateCcw, SkipForward, Maximize, Subtitles, Activity, ArrowLeft } from 'lucide-react';
 import { getPlaybackInfo, buildDirectStreamUrl, buildSubtitleUrl, reportPlaybackProgress, reportPlaybackStopped } from '../api/playback';
 import { getServerUrl } from '../api/client';
 import { usePlayerStore } from '../store/playerStore';
 import { useAuthStore } from '../store/authStore';
+import {
+  planLocalPlayback,
+  escalateAfterDirectPlayFailure,
+  cancelProcessing,
+  cleanupSession,
+  LocalPlaybackPlan,
+} from '../services/localMedia';
 
 interface SubtitleTrack { Index: number; Language: string; Title: string; IsDefault: boolean; }
 interface AudioTrack { Index: number; Language: string; Title: string; IsDefault: boolean; }
+
+type PlaybackTier = 'jellyfin' | 'direct' | 'remux' | 'hls';
 
 export default function VideoPlayer() {
   const activeItem = usePlayerStore((s) => s.activeItem);
@@ -22,7 +32,9 @@ export default function VideoPlayer() {
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [processingStage, setProcessingStage] = useState('');
   const [error, setError] = useState('');
+  const [sourceLabel, setSourceLabel] = useState('Jellyfin Stream');
 
   const [subtitles, setSubtitles] = useState<SubtitleTrack[]>([]);
   const [activeSubtitleIndex, setActiveSubtitleIndex] = useState<number | null>(null);
@@ -36,6 +48,12 @@ export default function VideoPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const progressReportRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const sessionIdRef = useRef<string>('');
+  // Tracks which playback path is active so a local playback error only ever
+  // escalates once (direct -> remux/hls), instead of retrying the same
+  // failing plan forever.
+  const tierRef = useRef<PlaybackTier>('jellyfin');
 
   const resetControlsTimeout = () => {
     setShowControls(true);
@@ -54,14 +72,122 @@ export default function VideoPlayer() {
   }, [isPlaying]);
 
   useEffect(() => {
-    if (!activeItem || !userId) return;
-    let mounted = true;
+    const isLocal = activeItem?.origin === 'local';
+    if (!activeItem) return;
+    if (!isLocal && !userId) return;
 
-    const init = async () => {
+    let mounted = true;
+    let escalated = false;
+
+    const teardownHls = () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+    };
+
+    const attachHls = (url: string) => {
+      const video = videoRef.current;
+      if (!video) return;
+      teardownHls();
+      if (Hls.isSupported()) {
+        const hls = new Hls();
+        hlsRef.current = hls;
+        hls.on(Hls.Events.ERROR, (_evt, data) => {
+          if (data.fatal && mounted) {
+            setError(`HLS playback failed (${data.type}).`);
+            setLoading(false);
+          }
+        });
+        hls.loadSource(url);
+        hls.attachMedia(video);
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = url;
+      } else {
+        setError('This platform cannot play HLS streams.');
+        setLoading(false);
+      }
+    };
+
+    const applyLocalPlan = (plan: LocalPlaybackPlan) => {
+      const video = videoRef.current;
+      if (!video) return;
+      sessionIdRef.current = plan.mode === 'direct' ? '' : plan.sessionId;
+      tierRef.current = plan.mode;
+      setSourceLabel(
+        plan.mode === 'direct'
+          ? 'Local File (direct play)'
+          : plan.mode === 'remux'
+          ? 'Local File (remuxed)'
+          : 'Local File (transcoded HLS)'
+      );
+      if (plan.mode === 'hls') {
+        attachHls(plan.url);
+      } else {
+        teardownHls();
+        video.src = plan.url;
+      }
+    };
+
+    const handleLocalPlaybackError = async () => {
+      if (!mounted) return;
+      if (tierRef.current !== 'direct' || escalated) {
+        setError('Video playback failed. The format may not be supported.');
+        setLoading(false);
+        return;
+      }
+      escalated = true;
+      try {
+        setProcessingStage('Direct playback failed — converting locally…');
+        const plan = await escalateAfterDirectPlayFailure(activeItem.localPath!);
+        if (!mounted) return;
+        applyLocalPlan(plan);
+      } catch (e: any) {
+        if (!mounted) return;
+        setError(e.message || 'Local conversion failed');
+        setLoading(false);
+      }
+    };
+
+    const initLocal = async () => {
       try {
         setLoading(true);
         setError('');
-        const info = await getPlaybackInfo(activeItem.id, userId);
+        setProcessingStage('Reading local file…');
+        teardownHls();
+
+        const video = videoRef.current;
+        if (!video) return;
+
+        const plan = await planLocalPlayback(activeItem.localPath!);
+        if (!mounted) return;
+        applyLocalPlan(plan);
+
+        video.onloadedmetadata = () => {
+          if (!mounted) return;
+          setLoading(false);
+          setProcessingStage('');
+          video.play().catch((e) => {
+            if (e.name !== 'AbortError' && mounted) setError(`Playback error: ${e.message}`);
+          });
+        };
+        video.onerror = () => {
+          handleLocalPlaybackError();
+        };
+      } catch (err: any) {
+        if (!mounted) return;
+        setError(err.message || 'Failed to load video stream');
+        setLoading(false);
+      }
+    };
+
+    const initJellyfin = async () => {
+      try {
+        setLoading(true);
+        setError('');
+        setSourceLabel('Jellyfin Stream');
+        tierRef.current = 'jellyfin';
+        const info = await getPlaybackInfo(activeItem.id, userId!);
         if (!info.MediaSources?.length) throw new Error('No media sources available');
 
         const src = info.MediaSources[0];
@@ -109,25 +235,38 @@ export default function VideoPlayer() {
       }
     };
 
-    init();
+    if (isLocal) {
+      initLocal();
+    } else {
+      initJellyfin();
 
-    // Report progress to Jellyfin every 30s
-    progressReportRef.current = setInterval(() => {
-      if (videoRef.current && userId && activeItem) {
-        const ticks = Math.floor(videoRef.current.currentTime * 10_000_000);
-        reportPlaybackProgress(activeItem.id, userId, ticks, !isPlaying);
-      }
-    }, 30_000);
+      // Report progress to Jellyfin every 30s (local files have no server to report to)
+      progressReportRef.current = setInterval(() => {
+        if (videoRef.current && userId) {
+          const ticks = Math.floor(videoRef.current.currentTime * 10_000_000);
+          reportPlaybackProgress(activeItem.id, userId, ticks, !isPlaying);
+        }
+      }, 30_000);
+    }
 
     return () => {
       mounted = false;
+      teardownHls();
       if (progressReportRef.current) clearInterval(progressReportRef.current);
-      if (videoRef.current && userId && activeItem) {
-        const ticks = Math.floor((videoRef.current.currentTime || 0) * 10_000_000);
-        reportPlaybackStopped(activeItem.id, userId, ticks);
+      if (videoRef.current) {
+        if (!isLocal && userId) {
+          const ticks = Math.floor((videoRef.current.currentTime || 0) * 10_000_000);
+          reportPlaybackStopped(activeItem.id, userId, ticks);
+        }
         videoRef.current.pause();
         videoRef.current.removeAttribute('src');
         videoRef.current.load();
+      }
+      if (sessionIdRef.current) {
+        const id = sessionIdRef.current;
+        sessionIdRef.current = '';
+        cancelProcessing(id).catch(() => {});
+        cleanupSession(id).catch(() => {});
       }
     };
   }, [activeItem?.id, userId]);
@@ -157,10 +296,10 @@ export default function VideoPlayer() {
   };
 
   const handleAudioChange = (index: number) => {
-    if (activeAudioIndex === index || !videoRef.current) return;
+    if (activeAudioIndex === index || !videoRef.current || !activeItem) return;
     const time = videoRef.current.currentTime;
     setActiveAudioIndex(index);
-    videoRef.current.src = buildDirectStreamUrl(activeItem!.id, mediaSourceId, index);
+    videoRef.current.src = buildDirectStreamUrl(activeItem.id, mediaSourceId, index);
     videoRef.current.currentTime = time;
     videoRef.current.play().catch(() => {});
   };
@@ -222,8 +361,11 @@ export default function VideoPlayer() {
       </video>
 
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
+        <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20 flex-col gap-3">
           <span className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+          {processingStage && (
+            <span className="text-xs text-on-surface-variant font-mono">{processingStage}</span>
+          )}
         </div>
       )}
       {error && (
@@ -234,10 +376,10 @@ export default function VideoPlayer() {
       {showDiagnostics && (
         <div className="absolute top-20 left-4 bg-black/80 p-4 rounded-xl border border-white/10 font-mono text-[10px] md:text-xs text-green-400 space-y-1.5 shadow-2xl backdrop-blur-md pointer-events-none z-30">
           <p className="text-white font-bold border-b border-white/10 pb-1 mb-1">STREAM DIAGNOSTICS</p>
-          <p>Source: Jellyfin Stream</p>
+          <p>Source: {sourceLabel}</p>
           <p>Duration: {formatTime(duration)}</p>
           <p>Current: {formatTime(currentTime)}</p>
-          <p>Server: {getServerUrl()}</p>
+          {activeItem.origin !== 'local' && <p>Server: {getServerUrl()}</p>}
         </div>
       )}
 

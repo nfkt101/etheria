@@ -1,17 +1,47 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Search, Download, Server, Menu, X } from 'lucide-react';
+import { Search, Download, Server, Menu, X, FolderOpen } from 'lucide-react';
 import { PROFILE_AVATAR } from '../../data';
 import { useAuthStore } from '../../store/authStore';
+import { usePlayerStore } from '../../store/playerStore';
+import { isDesktopRuntime, pickLocalVideoFile } from '../../services/localMedia';
 import MobileDrawer from './MobileDrawer';
 
 export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
   const username = useAuthStore((s) => s.username);
+  const openPlayer = usePlayerStore((s) => s.open);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
+
+  useEffect(() => {
+    isDesktopRuntime().then(setIsDesktop);
+  }, []);
 
   const is = (path: string) => location.pathname === path || (path === '/' && location.pathname === '/');
+
+  const openLocalFile = async () => {
+    const path = await pickLocalVideoFile();
+    if (!path) return;
+    const title = path.split(/[/\\]/).pop() || path;
+    openPlayer({
+      id: `local:${path}`,
+      title,
+      description: '',
+      type: 'movie',
+      image: '',
+      rating: 0,
+      tags: [],
+      progress: 0,
+      releaseYear: '',
+      duration: '',
+      genres: [],
+      tagline: '',
+      origin: 'local',
+      localPath: path,
+    });
+  };
 
   return (
     <>
@@ -86,6 +116,17 @@ export default function Header() {
                   {icon}
                 </button>
               ))}
+
+              {/* Open local file (desktop app only, hidden on the plain web build) */}
+              {isDesktop && (
+                <button
+                  onClick={openLocalFile}
+                  title="Open Local File"
+                  className="p-2 rounded-xl border border-white/5 bg-white/3 hover:bg-white/8 text-on-surface transition-all"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                </button>
+              )}
             </div>
 
             <div
