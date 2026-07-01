@@ -24,4 +24,8 @@ export interface MediaItem {
   cast?: string[];
   episodes?: Episode[];
   seasonEpisode?: string;
+  // Set when this item plays from a local file instead of the Jellyfin
+  // server - VideoPlayer branches on this instead of hitting the Jellyfin API.
+  origin?: 'local';
+  localPath?: string;
 }
