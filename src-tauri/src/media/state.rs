@@ -5,9 +5,10 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::process::CommandChild;
 
-/// Tracks in-flight ffmpeg sidecar sessions so they can be cancelled and
-/// gives each session an isolated cache directory (one remux/transcode job
-/// per session, cleaned up independently of the others).
+/// Tracks in-flight ffmpeg sidecar sessions so they can be cancelled.
+/// Session *directories* are created by `media_core::Session` - this only
+/// owns the Tauri-specific bits: child process handles and the base cache
+/// dir they live under.
 #[derive(Default)]
 pub struct MediaState {
     children: Mutex<HashMap<String, CommandChild>>,
@@ -29,11 +30,15 @@ impl MediaState {
         Ok(())
     }
 
-    pub fn session_dir(&self, app: &AppHandle, session_id: &str) -> Result<PathBuf, String> {
+    pub fn base_dir(&self, app: &AppHandle) -> Result<PathBuf, String> {
         let base = app
             .path()
             .app_cache_dir()
             .map_err(|e| format!("could not resolve app cache dir: {e}"))?;
-        Ok(base.join("etheria-media").join(session_id))
+        Ok(base.join("etheria-media"))
+    }
+
+    pub fn session_dir(&self, app: &AppHandle, session_id: &str) -> Result<PathBuf, String> {
+        Ok(self.base_dir(app)?.join(session_id))
     }
 }

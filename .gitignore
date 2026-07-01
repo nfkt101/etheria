@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Rust workspace build output (src-tauri, crates/media-core, crates/etheria-cli)
+/target/

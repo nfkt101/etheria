@@ -1,0 +1,12 @@
+[package]
+name = "media-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "VLC-like media processing logic shared by the Tauri app and the CLI: probing, remux/transcode planning, codec-eligibility heuristics. No process spawning and no GUI/runtime dependency - callers own how ffmpeg/ffprobe actually get run."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }

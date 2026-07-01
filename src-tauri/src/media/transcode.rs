@@ -3,6 +3,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
+use media_core::{parse_ffmpeg_time_line, transcode, Session};
+
 use super::state::MediaState;
 
 #[derive(Debug, Serialize, Clone)]
@@ -22,7 +24,9 @@ struct TranscodeProgress {
 /// encoded and the command returns as soon as the first segment exists, so
 /// playback (via hls.js) can begin before the whole file has been
 /// processed - the same "start watching while it transcodes" behavior
-/// Jellyfin's own server-side transcoder gives you.
+/// Jellyfin's own server-side transcoder gives you. Arg-building/planning
+/// comes from media_core; this layer only owns spawning it as a Tauri
+/// sidecar and reporting progress/state.
 #[tauri::command]
 pub async fn transcode_to_hls(
     app: AppHandle,
@@ -31,64 +35,34 @@ pub async fn transcode_to_hls(
     video_codec: Option<String>,
     audio_codec: Option<String>,
 ) -> Result<TranscodeStarted, String> {
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let session_dir = state.session_dir(&app, &session_id)?;
-    std::fs::create_dir_all(&session_dir).map_err(|e| e.to_string())?;
+    let base_dir = state.base_dir(&app)?;
+    let session = Session::create(&base_dir).map_err(|e| e.to_string())?;
+    let plan = transcode::plan_transcode(&session);
+    let manifest_path_str = plan.manifest_path.to_string_lossy().to_string();
 
-    let manifest_path = session_dir.join("index.m3u8");
-    let segment_pattern = session_dir.join("seg%05d.ts");
-    let manifest_path_str = manifest_path.to_string_lossy().to_string();
-    let segment_pattern_str = segment_pattern.to_string_lossy().to_string();
-
-    // h264/aac is the safe default: playable by every Tauri webview target
-    // (WebView2, WKWebView, WebKitGTK) without further processing.
-    let vcodec = video_codec.unwrap_or_else(|| "libx264".to_string());
-    let acodec = audio_codec.unwrap_or_else(|| "aac".to_string());
+    let vcodec = video_codec.unwrap_or_else(|| transcode::DEFAULT_VIDEO_CODEC.to_string());
+    let acodec = audio_codec.unwrap_or_else(|| transcode::DEFAULT_AUDIO_CODEC.to_string());
+    let args = transcode::ffmpeg_args(std::path::Path::new(&path), &plan, &vcodec, &acodec);
 
     let (mut rx, child) = app
         .shell()
         .sidecar("ffmpeg")
         .map_err(|e| e.to_string())?
-        .args([
-            "-y",
-            "-i",
-            &path,
-            "-c:v",
-            &vcodec,
-            "-preset",
-            "veryfast",
-            "-c:a",
-            &acodec,
-            "-ac",
-            "2",
-            "-f",
-            "hls",
-            "-hls_time",
-            "6",
-            "-hls_list_size",
-            "0",
-            "-hls_flags",
-            "independent_segments+temp_file",
-            "-hls_segment_filename",
-            &segment_pattern_str,
-            &manifest_path_str,
-        ])
+        .args(args)
         .spawn()
         .map_err(|e| e.to_string())?;
 
-    state.track(&session_id, child);
+    state.track(&session.id, child);
 
     // Drive progress/cleanup for the rest of the session's life in the
     // background; the command itself only waits for the first segment.
     let app_events = app.clone();
-    let session_for_events = session_id.clone();
+    let session_for_events = session.id.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stderr(line) => {
-                    if let Some(secs) =
-                        super::remux::parse_ffmpeg_time(&String::from_utf8_lossy(&line))
-                    {
+                    if let Some(secs) = parse_ffmpeg_time_line(&String::from_utf8_lossy(&line)) {
                         let _ = app_events.emit(
                             "media://transcode-progress",
                             TranscodeProgress {
@@ -108,10 +82,10 @@ pub async fn transcode_to_hls(
         let _ = app_events.emit("media://transcode-done", session_for_events.clone());
     });
 
-    wait_for_first_segment(&manifest_path, &session_id, &state).await?;
+    wait_for_first_segment(&plan.manifest_path, &session.id, &state).await?;
 
     Ok(TranscodeStarted {
-        session_id,
+        session_id: session.id,
         manifest_path: manifest_path_str,
     })
 }
@@ -124,7 +98,7 @@ async fn wait_for_first_segment(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         if let Ok(contents) = std::fs::read_to_string(manifest_path) {
-            if contents.contains(".ts") {
+            if transcode::manifest_has_playable_segment(&contents) {
                 return Ok(());
             }
         }

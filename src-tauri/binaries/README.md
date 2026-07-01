@@ -30,3 +30,16 @@ running `npm run tauri build` or `npm run tauri dev`:
 
 Sidecars are desktop-only — Tauri does not support `externalBin` on iOS/Android.
 Mobile builds will need ffmpeg linked in-process instead (see project roadmap).
+
+## If you just want to try the pipeline without the desktop app
+
+`crates/etheria-cli` (binary name `etheria`) exercises the exact same probe/
+remux/transcode logic (via the shared `media-core` crate) without any of the
+sidecar bundling above — it just looks up `ffmpeg`/`ffprobe`/`ffplay` on your
+`PATH` (or `--ffmpeg-path`/`--ffprobe-path`/`--ffplay-path` if you'd rather
+point at something specific):
+
+```
+cargo run -p etheria-cli -- probe some-video.mkv
+cargo run -p etheria-cli -- play some-video.mkv
+```
