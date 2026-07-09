@@ -1,0 +1,17 @@
+[package]
+name = "etheria-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone CLI for Etheria's VLC-like media pipeline: probe, remux, transcode, and instant playback via ffplay."
+
+[[bin]]
+name = "etheria"
+path = "src/main.rs"
+
+[dependencies]
+media-core = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+which = "6"
+anyhow = "1"

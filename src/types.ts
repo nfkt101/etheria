@@ -6,7 +6,7 @@ export interface Episode {
   description: string;
 }
 
-export interface Movie {
+export interface MediaItem {
   id: string;
   title: string;
   description: string;
@@ -14,9 +14,8 @@ export interface Movie {
   image: string;
   rating: number;
   tags: string[];
-  category: 'trending' | 'continue' | 'recent' | 'top_rated';
-  progress?: number; // percentage completed, e.g. 65
-  seasonEpisode?: string; // e.g. "S2 • E5: The Crossing" or "2h 15m remaining"
+  progress: number;
+  lastPlayedDate?: string;
   releaseYear: string;
   duration: string;
   genres: string[];
@@ -24,14 +23,9 @@ export interface Movie {
   director?: string;
   cast?: string[];
   episodes?: Episode[];
-}
-
-export type ActiveTab = 'home' | 'movies' | 'tv-shows' | 'search' | 'downloads' | 'server' | 'profile';
-
-export type DeviceMode = 'desktop' | 'mobile';
-
-export interface UserState {
-  favorites: string[]; // movie IDs
-  downloads: { [movieId: string]: 'queued' | 'downloading' | 'completed' | number }; // Status or progress %
-  watchHistory: { movieId: string; timestamp: number; progress: number }[];
+  seasonEpisode?: string;
+  // Set when this item plays from a local file instead of the Jellyfin
+  // server - VideoPlayer branches on this instead of hitting the Jellyfin API.
+  origin?: 'local';
+  localPath?: string;
 }
