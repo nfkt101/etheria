@@ -1,0 +1,16 @@
+FROM docker.io/library/rust:1-slim-bookworm
+
+# ffmpeg on Debian bookworm also provides ffprobe and ffplay, which is all
+# media-core/etheria-cli need at runtime. build-essential/pkg-config cover
+# the usual crate build requirements (cc linker, native library discovery).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Source is bind-mounted in by docker-compose.yml, not copied here - this
+# image is the toolchain only, meant for interactive development.
+CMD ["bash"]

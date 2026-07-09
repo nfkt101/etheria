@@ -1,0 +1,20 @@
+services:
+  rust-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile.rust-dev
+    working_dir: /workspace
+    volumes:
+      # Live-mount the repo so edits on the host show up immediately.
+      - .:/workspace
+      # Named volumes so cargo's registry cache and build artifacts survive
+      # `docker compose down` instead of re-downloading/rebuilding every time.
+      - cargo-registry:/usr/local/cargo/registry
+      - rust-cli-target:/workspace/target
+    tty: true
+    stdin_open: true
+    command: bash
+
+volumes:
+  cargo-registry:
+  rust-cli-target:

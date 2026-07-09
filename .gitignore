@@ -9,3 +9,6 @@ coverage/
 
 # Rust workspace build output (src-tauri, crates/media-core, crates/etheria-cli)
 /target/
+
+# Binary copied out of the rust-cli dev container for host-side use
+/bin/
